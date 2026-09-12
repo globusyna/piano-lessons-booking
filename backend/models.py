@@ -25,8 +25,15 @@ LocalTime = Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-
 
 
 class Package(ApiModel):
+    """A package as it is read back: ``size`` is the running total it holds.
+
+    Not `Literal[5, 8, 10]` -- renewing tops a package up in place, so any total
+    from 1 upward can be read back. `PackageRequest` below is what keeps the
+    purchasable sizes to 5, 8 and 10.
+    """
+
     id: int | None = None
-    size: Literal[5, 8, 10]
+    size: int = Field(ge=1)
     used: int = Field(ge=0)
     period_no: int = Field(alias="periodNo", ge=1)
 
@@ -131,6 +138,13 @@ class StudentSlotRequest(ApiModel):
 
 
 class PackageRequest(ApiModel):
+    """The body for both opening a package and renewing one.
+
+    The sizes on the price list, and the only sizes either endpoint accepts.
+    `Package.size` above is unconstrained because a renewal adds to the stored
+    total; what can be *bought* in one go is still 5, 8 or 10.
+    """
+
     size: Literal[5, 8, 10]
 
 
