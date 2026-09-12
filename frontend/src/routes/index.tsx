@@ -1,0 +1,60 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { usePianoStore } from "@/hooks/use-piano-store";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Piano lesson calendar" },
+      {
+        name: "description",
+        content:
+          "A calendar for a piano studio: lesson times for students, availability and packages for the teacher.",
+      },
+      { property: "og:title", content: "Piano lesson calendar" },
+      {
+        property: "og:description",
+        content: "Lesson times for students, availability and packages for the teacher.",
+      },
+    ],
+  }),
+  component: Index,
+});
+
+function Index() {
+  const state = usePianoStore();
+
+  return (
+    <main className="mx-auto w-full max-w-[560px] px-6 pt-16 pb-20">
+      <h1 className="font-display text-5xl leading-tight">Piano lesson calendar</h1>
+      <p className="mt-4 text-slate">
+        Two surfaces, one studio. Everything below runs on demo data.
+      </p>
+
+      <section className="mt-10">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Teacher</h2>
+        <Link to="/admin" className="mt-2 inline-block text-felt underline underline-offset-4">
+          Open studio admin
+        </Link>
+        <p className="text-sm text-slate">Password: piano</p>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Student links</h2>
+        <ul className="mt-2 divide-y divide-border border-t border-b border-border">
+          {state.students.map((s) => (
+            <li key={s.id} className="flex items-center justify-between py-2.5">
+              <span>{s.name}</span>
+              <Link
+                to="/s/$token"
+                params={{ token: s.token }}
+                className="text-sm text-felt underline underline-offset-4"
+              >
+                /s/{s.token}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </main>
+  );
+}
