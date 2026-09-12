@@ -19,6 +19,7 @@ router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(requir
 
 @router.get("/api/week")
 def get_week(start: date) -> dict:
+    store.complete_due_lessons()
     if start.weekday() != 0:
         raise StoreError(400, "INVALID_WEEK", "The requested week must start on Monday.")
     days = []
@@ -82,6 +83,7 @@ def remove_blackout(blackout_id: int) -> dict:
 
 @router.get("/students")
 def list_students() -> dict:
+    store.complete_due_lessons()
     return {"students": store.list_students()}
 
 
@@ -95,6 +97,7 @@ def create_student(body: StudentCreate) -> dict:
 
 @router.get("/students/{student_id}")
 def get_student(student_id: int) -> dict:
+    store.complete_due_lessons()
     return {"student": store.student(student_id), "lessons": store.lesson_history(student_id)}
 
 
@@ -128,6 +131,16 @@ def remove_lesson(lesson_id: int) -> dict:
     return {"ok": True}
 
 
+@router.post("/lessons/{lesson_id}/done")
+def complete_lesson(lesson_id: int) -> dict:
+    return {"ok": True, "data": store.complete_lesson(lesson_id)}
+
+
+@router.post("/lessons/{lesson_id}/undo")
+def uncomplete_lesson(lesson_id: int) -> dict:
+    return {"ok": True, "data": store.uncomplete_lesson(lesson_id)}
+
+
 @router.post("/move-requests/{request_id}/approve")
 def approve_move_request(request_id: int) -> dict:
     lesson = store.approve_lesson_move(request_id)
@@ -136,6 +149,7 @@ def approve_move_request(request_id: int) -> dict:
 
 @router.get("/alerts")
 def list_alerts() -> dict:
+    store.complete_due_lessons()
     move_alerts = [
         {
             "type": "moveRequest",
