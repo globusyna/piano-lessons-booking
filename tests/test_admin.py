@@ -6,7 +6,12 @@ from backend.store import STUDIO_TZ, store
 
 
 def test_week_and_availability_have_seed_data(client: TestClient, admin_headers: dict[str, str]) -> None:
-    monday = datetime.now(STUDIO_TZ).date() - timedelta(days=datetime.now(STUDIO_TZ).weekday())
+    # Next week, not this one: how much of the current week is already behind us
+    # depends on the weekday the suite runs on, and a lesson whose time has
+    # passed is completed on read and leaves the calendar. Next week's seeded
+    # lessons and the seeded blackout are always still ahead.
+    today = datetime.now(STUDIO_TZ).date()
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=1)
     week = client.get("/admin/api/week", params={"start": monday.isoformat()}, headers=admin_headers)
     availability = client.get("/admin/availability", headers=admin_headers)
 
@@ -74,14 +79,20 @@ def test_student_admin_lifecycle(client: TestClient, admin_headers: dict[str, st
 
 def test_alert_invoice_and_lesson_removal(client: TestClient, admin_headers: dict[str, str]) -> None:
     alerts = client.get("/admin/alerts", headers=admin_headers)
-    alert = next(item for item in alerts.json()["alerts"] if item["type"] == "invoice")
-    assert alert["student"]["name"] == "Jonas Berg"
+    # Jonas by name, not "the only invoice alert": completing lessons whose time
+    # has passed can carry another seeded student's package to full as well.
+    alert = next(
+        item
+        for item in alerts.json()["alerts"]
+        if item["type"] == "invoice" and item["student"]["name"] == "Jonas Berg"
+    )
 
     invoiced = client.post(
         f"/admin/packages/{alert['package']['id']}/invoiced", headers=admin_headers
     )
     assert invoiced.status_code == 200
-    assert client.get("/admin/alerts", headers=admin_headers).json()["alerts"] == []
+    remaining = client.get("/admin/alerts", headers=admin_headers).json()["alerts"]
+    assert all(item["student"]["name"] != "Jonas Berg" for item in remaining)
 
     lesson_id = client.get("/admin/students/1", headers=admin_headers).json()["lessons"][0]["id"]
     removed = client.delete(f"/admin/lessons/{lesson_id}", headers=admin_headers)

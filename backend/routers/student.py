@@ -10,6 +10,9 @@ router = APIRouter(prefix="/s", tags=["Student"])
 
 
 def _view(token: str) -> StudentView:
+    # Catch-up-on-read: the student's own page is one of the reads that closes
+    # out lessons whose time has passed (see DatabaseStore.complete_due_lessons).
+    store.complete_due_lessons()
     student = store.student_for_token(token)
     now = datetime.now(STUDIO_TZ)
     upcoming = [

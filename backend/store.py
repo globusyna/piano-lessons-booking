@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from threading import RLock
 from zoneinfo import ZoneInfo
@@ -35,6 +37,47 @@ from .models import (
 
 STUDIO_TZ = ZoneInfo("Europe/Oslo")
 ROW_TIMES = ["14:00", "14:45", "15:30", "16:15", "17:00", "17:45", "18:30"]
+
+
+class StudioClock:
+    """The one "now" the lesson completion logic reads.
+
+    Completion is the only behaviour in the store that has to be driven from a
+    test at an exact instant -- the moment a package's last lesson passes -- and
+    a test cannot wait for that instant to arrive. So the completion code path
+    asks this object for the time instead of calling ``datetime.now`` inline,
+    and a test pins it:
+
+        with clock.pinned(last_lesson_starts_at):
+            client.get("/admin/alerts", headers=admin_headers)
+
+    Deliberately narrow: only the completion path reads it today. Giving the
+    whole backend a controllable clock is #32 (B-51), and this seam is meant to
+    be what that issue grows, not something it has to undo.
+    """
+
+    def __init__(self) -> None:
+        self._pinned: datetime | None = None
+
+    def now(self) -> datetime:
+        """The authoritative "now", in studio time."""
+        pinned = self._pinned
+        return (pinned if pinned is not None else datetime.now(STUDIO_TZ)).astimezone(STUDIO_TZ)
+
+    @contextmanager
+    def pinned(self, instant: datetime) -> Iterator[datetime]:
+        """Freeze ``now`` at ``instant`` for the duration of the block."""
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("A pinned instant must carry a UTC offset")
+        previous = self._pinned
+        self._pinned = instant
+        try:
+            yield self.now()
+        finally:
+            self._pinned = previous
+
+
+clock = StudioClock()
 
 
 class StoreError(Exception):
@@ -678,6 +721,137 @@ class DatabaseStore:
                 )
             )
             session.delete(lesson)
+
+    # --- Lesson completion -------------------------------------------------
+    #
+    # Design decision: catch-up-on-read, not a scheduled job.
+    #
+    # A lesson that has started is completed by the next request that reads the
+    # data it affects (`GET /admin/students`, `GET /admin/students/{id}`,
+    # `GET /admin/api/week`, `GET /admin/alerts`, `GET /s/{token}`), which is
+    # why `complete_due_lessons` is called from those handlers.
+    #
+    # The trade-off, stated plainly: a package that finished days ago keeps
+    # reading as unconsumed, and its invoice alert stays silent, until somebody
+    # reads that studio's data. Nothing here notices time passing on its own.
+    # The alternative -- a nightly job -- is a process that has to be deployed,
+    # run and monitored, which is new infrastructure this app has none of today
+    # (`_docs/specs.md` section 6's nightly job was never built). A real
+    # scheduled job is filed separately as #43 for when that gap starts to
+    # matter in practice.
+    #
+    # "Past" is measured against `clock.now()` in `STUDIO_TZ`, the same clock
+    # `is_day_locked` uses. Sweeping is global rather than per student: it is a
+    # single indexed query, and it keeps every read seeing the same world.
+
+    def _due_lesson_records(self, session: Session, now: datetime) -> list[LessonRecord]:
+        """Every lesson that has started and is still marked scheduled.
+
+        Only `status` and `starts_at` decide this. A paused or flagged student's
+        lesson is swept exactly like an active student's (whether pausing should
+        have released the lesson at all is #12's job), and a lesson deleted via
+        `DELETE /admin/lessons/{id}` is not a row any more, so it is never seen
+        here -- there is no `cancelled` status to exempt today (see #44).
+        """
+        return list(
+            session.scalars(
+                select(LessonRecord)
+                .where(
+                    LessonRecord.status == LessonStatus.SCHEDULED.value,
+                    LessonRecord.starts_at <= now,
+                )
+                .order_by(LessonRecord.starts_at, LessonRecord.id)
+            )
+        )
+
+    @staticmethod
+    def _consume_package_credit(session: Session, lesson: LessonRecord) -> bool:
+        """Count one lesson against its package, never past `size`.
+
+        `packages.used <= size` is a database CHECK constraint, so going past it
+        is a crash, not a wrong number. A package that is already full keeps its
+        count and the lesson is still completed by the caller, so it stops
+        showing up as an overdue "scheduled" lesson on the calendar.
+        """
+        package = session.get(PackageRecord, lesson.package_id)
+        if package is None:
+            raise RuntimeError(f"Lesson {lesson.id} points at a package that does not exist")
+        if package.used >= package.size:
+            return False
+        package.used += 1
+        return True
+
+    def complete_due_lessons(self) -> int:
+        """Mark every started lesson done, once, and return how many were swept.
+
+        Idempotent: the transition is what guards it. A second sweep no longer
+        matches a lesson it has already completed, so `used` goes up by exactly
+        one per lesson however many times this runs. The single-writer lock is
+        held across the read and the write, so two overlapping requests are
+        serialised rather than both seeing the same lesson as scheduled.
+        """
+        now = clock.now()
+        with self._lock, self._sessions.begin() as session:
+            due = self._due_lesson_records(session, now)
+            for lesson in due:
+                lesson.status = LessonStatus.DONE.value
+                self._consume_package_credit(session, lesson)
+            return len(due)
+
+    def complete_lesson(self, lesson_id: int) -> Lesson:
+        """Mark one lesson done by hand, including one that has not started yet.
+
+        The admin override for "the lesson happened" -- an early completion, or
+        a lesson the sweep has not reached because nothing has read this studio's
+        data since it started.
+        """
+        with self._lock, self._sessions.begin() as session:
+            lesson = session.get(LessonRecord, lesson_id)
+            if lesson is None:
+                raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+            if lesson.status == LessonStatus.DONE.value:
+                raise StoreError(
+                    409, "LESSON_ALREADY_DONE", "That lesson is already marked done."
+                )
+            # Unlike the sweep, an explicit admin action on a full package fails
+            # loudly instead of completing the lesson without counting it: the
+            # sweep has no one to tell, this endpoint does.
+            if not self._consume_package_credit(session, lesson):
+                raise StoreError(
+                    409,
+                    "PACKAGE_FULL",
+                    "This package has no lessons left to use. Undo another lesson first.",
+                )
+            lesson.status = LessonStatus.DONE.value
+            session.flush()
+            return self._lesson_model(lesson)
+
+    def uncomplete_lesson(self, lesson_id: int) -> Lesson:
+        """Undo a completion: back to scheduled, one lesson back on the package.
+
+        Undoing a lesson whose time has already passed puts it straight back
+        into the set the sweep matches, so the next read marks it done again.
+        That is expected, not a bug: completion is derived from the clock, and
+        the way to keep a past lesson from coming back is to delete it. A
+        first-class `cancelled` status that would not need the two-step is #44.
+        """
+        with self._lock, self._sessions.begin() as session:
+            lesson = session.get(LessonRecord, lesson_id)
+            if lesson is None:
+                raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+            if lesson.status != LessonStatus.DONE.value:
+                raise StoreError(409, "LESSON_NOT_DONE", "That lesson is not marked done.")
+            package = session.get(PackageRecord, lesson.package_id)
+            if package is None:
+                raise RuntimeError(f"Lesson {lesson.id} points at a package that does not exist")
+            if package.used <= 0:
+                raise StoreError(
+                    409, "PACKAGE_EMPTY", "This package has no used lessons to give back."
+                )
+            package.used -= 1
+            lesson.status = LessonStatus.SCHEDULED.value
+            session.flush()
+            return self._lesson_model(lesson)
 
     def list_move_requests(
         self,
