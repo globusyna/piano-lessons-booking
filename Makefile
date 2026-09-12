@@ -8,7 +8,7 @@ FRONTEND_HOST ?= localhost
 FRONTEND_PORT ?= 5173
 API_BASE_URL ?= http://$(BACKEND_HOST):$(BACKEND_PORT)
 
-.PHONY: help setup install run backend frontend test lint build check
+.PHONY: help setup install run backend frontend migrate test lint build check
 
 help: ## Show the available commands
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-10s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -31,6 +31,9 @@ backend: ## Run the backend development server
 
 frontend: ## Run the frontend development server
 	VITE_API_BASE_URL=$(API_BASE_URL) npm --prefix frontend run dev -- --host $(FRONTEND_HOST) --port $(FRONTEND_PORT)
+
+migrate: ## Upgrade the database to the latest migration
+	uv run alembic -c backend/alembic.ini upgrade head
 
 test: ## Run the backend test suite
 	uv run pytest

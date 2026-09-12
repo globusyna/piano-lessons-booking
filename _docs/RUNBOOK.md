@@ -100,6 +100,70 @@ PIANO_DATABASE_URL=sqlite+pysqlite:///./data/piano.db make backend
 
 The database is seeded only when it is empty, so restarting the server preserves changes.
 
+## Database migrations
+
+The schema is owned by Alembic (`backend/alembic.ini`, `backend/migrations/`), not by
+`create_all`. Starting the backend upgrades its database to the latest revision first, so in normal
+local development there is nothing to run by hand.
+
+To upgrade a database without starting the server:
+
+```sh
+make migrate
+```
+
+It reads `PIANO_DATABASE_URL` the same way `make backend` and `make test` do, so point it at the
+same database the server uses:
+
+```sh
+PIANO_DATABASE_URL=sqlite+pysqlite:///./data/piano.db make migrate
+```
+
+### Writing a new revision
+
+Change the models in `backend/db_models.py`, then generate a revision by comparing them against an
+up-to-date database:
+
+```sh
+make migrate
+uv run alembic -c backend/alembic.ini revision --autogenerate -m "add lesson notes"
+```
+
+Read the generated file before committing it - autogenerate is a first draft. SQLite cannot
+`ALTER TABLE` for most column and constraint changes, so `env.py` sets `render_as_batch=True` and
+column changes come out wrapped in `op.batch_alter_table`. Keep that wrapping.
+
+### Upgrading a `piano.db` created before migrations existed
+
+A `piano.db` from before this change has the tables but no `alembic_version` table, so Alembic does
+not know which revision it is at. There are three ways forward.
+
+**Just start the backend** (what most people want). `make backend` recognises a database that has
+the initial schema but no version table, stamps it with the initial revision, and upgrades from
+there. Your rows are left alone:
+
+```sh
+make backend
+```
+
+**Start over from a fresh seed.** The local database only ever holds demo data, so throwing it away
+costs nothing. Delete it and restart - the backend recreates the schema and reseeds it:
+
+```sh
+rm piano.db
+make backend
+```
+
+**Keep the data and stay on the command line.** `make migrate` on its own will fail on a
+pre-Alembic database, because the initial revision tries to create tables that are already there.
+Tell Alembic where the database already is, once:
+
+```sh
+uv run alembic -c backend/alembic.ini stamp head
+```
+
+After that, `make migrate` is the only command needed for every later revision.
+
 ## Frontend
 
 With the default Make variables, the frontend is available at `http://localhost:5173`. Useful

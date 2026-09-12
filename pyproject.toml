@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Database-backed FastAPI backend for the piano lesson booking app"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.0",
     "fastapi>=0.141.1",
     "pwdlib[argon2]>=0.3.1",
     "pyjwt>=2.14.0",
