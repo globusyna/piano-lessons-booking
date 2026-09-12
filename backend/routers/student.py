@@ -50,7 +50,7 @@ def get_open_slots(
 ) -> dict:
     student = store.student_for_token(token)
     if lesson_id is not None:
-        lesson = store.lessons.get(lesson_id)
+        lesson = store.lesson(lesson_id)
         if lesson is None or lesson.student_id != student.id:
             raise StoreError(404, "INVALID_TOKEN", "This link isn't valid. Ask your teacher for a new one.")
     return {"slots": [{"startsAt": value} for value in store.open_slots(from_date, to_date, lesson_id)]}

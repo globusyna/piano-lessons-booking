@@ -27,17 +27,8 @@ def get_week(start: date) -> dict:
         cells = []
         for local_time in ROW_TIMES:
             starts_at = store._at(day_date, local_time)
-            lesson = next(
-                (
-                    item
-                    for item in store.lessons.values()
-                    if item.starts_at == starts_at and item.status.value == "scheduled"
-                ),
-                None,
-            )
-            blackout = next(
-                (item for item in store.blackouts.values() if item.starts_at == starts_at), None
-            )
+            lesson = store.scheduled_lesson_at(starts_at)
+            blackout = store.blackout_at(starts_at)
             if lesson:
                 student = store.student(lesson.student_id)
                 cells.append(
@@ -62,16 +53,13 @@ def get_week(start: date) -> dict:
 def get_availability() -> dict:
     return {
         "hours": store.hours,
-        "blackouts": [
-            {"id": item.id, "startsAt": item.starts_at, "note": item.note}
-            for item in sorted(store.blackouts.values(), key=lambda value: value.starts_at)
-        ],
+        "blackouts": store.list_blackouts(),
     }
 
 
 @router.post("/availability")
 def set_availability(body: AvailabilityRequest) -> dict:
-    store.hours[body.day] = body.times
+    store.set_hours(body.day, body.times)
     return {"ok": True}
 
 
@@ -92,7 +80,7 @@ def remove_blackout(blackout_id: int) -> dict:
 
 @router.get("/students")
 def list_students() -> dict:
-    return {"students": list(store.students.values())}
+    return {"students": store.list_students()}
 
 
 @router.post("/students", status_code=201)
@@ -110,9 +98,7 @@ def get_student(student_id: int) -> dict:
 
 @router.post("/students/{student_id}/slot")
 def set_student_slot(student_id: int, body: StudentSlotRequest) -> dict:
-    student = store.student(student_id)
-    student.slot_day = body.slot_day
-    student.slot_time = body.slot_time
+    store.set_student_slot(student_id, body.slot_day, body.slot_time)
     return {"ok": True}
 
 
@@ -124,7 +110,7 @@ def open_student_package(student_id: int, body: PackageRequest) -> dict:
 
 @router.post("/students/{student_id}/status")
 def set_student_status(student_id: int, body: StatusRequest) -> dict:
-    store.student(student_id).status = body.status
+    store.set_student_status(student_id, body.status)
     return {"ok": True}
 
 
@@ -136,8 +122,7 @@ def mark_package_invoiced(package_id: int) -> dict:
 
 @router.delete("/lessons/{lesson_id}")
 def remove_lesson(lesson_id: int) -> dict:
-    if store.lessons.pop(lesson_id, None) is None:
-        raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+    store.remove_lesson(lesson_id)
     return {"ok": True}
 
 
@@ -146,9 +131,8 @@ def list_alerts() -> dict:
     alerts = [
         {
             "student": {"id": student.id, "name": student.name, "status": student.status},
-            "package": student.pkg,
+            "package": package,
         }
-        for student in store.students.values()
-        if student.pkg.used >= student.pkg.size and not student.invoice_sent
+        for student, package in store.list_alerts()
     ]
     return {"alerts": alerts}
