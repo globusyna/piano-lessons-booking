@@ -1,5 +1,10 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
+
+# Never let the destructive reset fixture target a developer or production database.
+os.environ["PIANO_DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 
 from backend.main import app
 from backend.store import store

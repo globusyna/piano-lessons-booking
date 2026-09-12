@@ -91,7 +91,14 @@ export PIANO_JWT_SECRET='replace-with-a-long-random-secret'
 make backend
 ```
 
-The backend uses an in-memory store. Restarting it discards changes and restores the seed data.
+The backend persists data in `./piano.db` by default. Set `PIANO_DATABASE_URL` to choose another
+SQLAlchemy database URL:
+
+```sh
+PIANO_DATABASE_URL=sqlite+pysqlite:///./data/piano.db make backend
+```
+
+The database is seeded only when it is empty, so restarting the server preserves changes.
 
 ## Frontend
 

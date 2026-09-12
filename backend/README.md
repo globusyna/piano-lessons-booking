@@ -1,7 +1,7 @@
 # Backend
 
-The backend is a FastAPI application with a seeded, in-memory data store. State resets whenever
-the process restarts.
+The backend is a FastAPI application backed by SQLAlchemy. It uses a persistent SQLite database
+at `./piano.db` by default and seeds it on first use.
 
 Start it from the repository root:
 
@@ -17,6 +17,18 @@ development so issued tokens use an application-specific signing key.
 
 Student endpoints use the personal token in their URL. Seeded examples include `/s/anna`,
 `/s/jonas`, and `/s/mira`.
+
+Set `PIANO_DATABASE_URL` to any SQLAlchemy database URL before starting the server to use another
+database. For example:
+
+```sh
+PIANO_DATABASE_URL=sqlite+pysqlite:///./data/piano.db \
+  uv run uvicorn backend.main:app --reload
+```
+
+The models and store use SQLAlchemy's portable types and query APIs. Adding PostgreSQL later only
+requires its database driver and a PostgreSQL URL; database-specific engine options are isolated
+in `backend/database.py`.
 
 Run the tests with:
 
