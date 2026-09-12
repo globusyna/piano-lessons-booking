@@ -13,6 +13,9 @@ def test_week_and_availability_have_seed_data(client: TestClient, admin_headers:
     assert week.status_code == 200
     assert len(week.json()["days"]) == 5
     assert all(len(day["cells"]) == 7 for day in week.json()["days"])
+    cells = [cell for day in week.json()["days"] for cell in day["cells"]]
+    assert any(cell["type"] == "lesson" for cell in cells)
+    assert any(cell["type"] == "blackout" for cell in cells)
     assert availability.status_code == 200
     assert availability.json()["hours"]["2"]
     assert availability.json()["blackouts"]

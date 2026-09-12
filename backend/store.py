@@ -25,6 +25,8 @@ from .models import Blackout, Lesson, LessonStatus, Package, Student, StudentSta
 
 STUDIO_TZ = ZoneInfo("Europe/Oslo")
 ROW_TIMES = ["14:00", "14:45", "15:30", "16:15", "17:00", "17:45", "18:30"]
+SEEDED_STUDENT_TOKENS = {"anna", "jonas", "mira", "teodor", "selma", "oskar"}
+SEEDED_LESSON_COUNT = 58
 
 
 class StoreError(Exception):
@@ -42,6 +44,7 @@ class DatabaseStore:
         self._lock = RLock()
         Base.metadata.create_all(self.engine)
         self._seed_if_empty()
+        self._upgrade_legacy_seed_data()
 
     @property
     def admin_username(self) -> str:
@@ -155,7 +158,7 @@ class DatabaseStore:
                         LessonStatus.DONE,
                     )
                 for seq in range(used + 1, size + 1):
-                    lesson_day = monday + timedelta(days=day - 1, weeks=seq - used)
+                    lesson_day = monday + timedelta(days=day - 1, weeks=seq - used - 1)
                     self._add_lesson_record(
                         session, student.id, package.id, seq, self._at(lesson_day, slot_time)
                     )
@@ -165,11 +168,62 @@ class DatabaseStore:
                         starts_at=self._at(monday + timedelta(days=2), "17:00"), note="Dentist"
                     ),
                     BlackoutRecord(
+                        starts_at=self._at(monday + timedelta(days=2), "17:45"), note="Dentist"
+                    ),
+                    BlackoutRecord(
                         starts_at=self._at(monday + timedelta(days=9), "14:00"),
                         note="Recital rehearsal",
                     ),
                 ]
             )
+
+    def _upgrade_legacy_seed_data(self) -> None:
+        """Repair only pristine databases created with the original one-week seed gap."""
+        with self._sessions.begin() as session:
+            students = session.scalars(select(StudentRecord).order_by(StudentRecord.id)).all()
+            lesson_count = session.scalar(select(func.count()).select_from(LessonRecord))
+            if (
+                {student.token for student in students} != SEEDED_STUDENT_TOKENS
+                or lesson_count != SEEDED_LESSON_COUNT
+            ):
+                return
+
+            schedules: list[list[LessonRecord]] = []
+            for student in students:
+                done = session.scalar(
+                    select(LessonRecord)
+                    .where(
+                        LessonRecord.student_id == student.id,
+                        LessonRecord.status == LessonStatus.DONE.value,
+                    )
+                    .order_by(LessonRecord.starts_at.desc())
+                    .limit(1)
+                )
+                scheduled = session.scalars(
+                    select(LessonRecord)
+                    .where(
+                        LessonRecord.student_id == student.id,
+                        LessonRecord.status == LessonStatus.SCHEDULED.value,
+                    )
+                    .order_by(LessonRecord.starts_at)
+                ).all()
+                if not scheduled:
+                    continue
+                if done is None or scheduled[0].starts_at - done.starts_at != timedelta(days=14):
+                    return
+                schedules.append(list(scheduled))
+
+            for lessons in schedules:
+                for lesson in lessons:
+                    lesson.starts_at -= timedelta(days=7)
+                    session.flush([lesson])
+
+            dentist_slot = self._at(self._monday(datetime.now(STUDIO_TZ).date()) + timedelta(days=2), "17:45")
+            existing_blackout = session.scalar(
+                select(BlackoutRecord).where(BlackoutRecord.starts_at == dentist_slot)
+            )
+            if existing_blackout is None:
+                session.add(BlackoutRecord(starts_at=dentist_slot, note="Dentist"))
 
     @staticmethod
     def _monday(value: date) -> date:
