@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
@@ -14,16 +15,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { usePianoStore } from "@/hooks/use-piano-store";
-import {
-  ROW_TIMES,
-  fmt,
-  lessonHistory,
-  markInvoiceSent,
-  openPackage,
-  setStudentStatus,
-  setWeeklySlot,
-} from "@/lib/piano-data";
+import { pianoKeys, useStudent } from "@/hooks/use-piano-store";
+import { api, errorMessage } from "@/lib/api-client";
+import { ROW_TIMES, fmt } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/students/$id")({
   component: StudentDetail,
@@ -39,23 +33,33 @@ const DAYS = [
 
 function StudentDetail() {
   const { id } = Route.useParams();
-  const state = usePianoStore();
-  const student = state.students.find((s) => s.id === Number(id));
+  const studentId = Number(id);
+  const detail = useStudent(studentId);
+  const queryClient = useQueryClient();
   const [packageSize, setPackageSize] = useState(10);
   const [confirmPackage, setConfirmPackage] = useState(false);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+
+  if (detail.isPending) return <p className="text-sm text-slate">Loading student…</p>;
+  if (detail.isError) return <p className="text-sm text-felt">{errorMessage(detail.error)}</p>;
+  const student = detail.data.student;
 
   if (!student) {
     return (
       <div>
         <h1 className="text-2xl">No such student.</h1>
-        <Link to="/admin/students" className="mt-3 inline-block text-sm text-felt underline underline-offset-4">
+        <Link
+          to="/admin/students"
+          className="mt-3 inline-block text-sm text-felt underline underline-offset-4"
+        >
           Back to students
         </Link>
       </div>
     );
   }
 
-  const history = lessonHistory(student.id);
+  const history = detail.data.lessons;
 
   return (
     <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -73,7 +77,9 @@ function StudentDetail() {
           <PackageProgress used={student.pkg.used} size={student.pkg.size} />
         </div>
 
-        <h2 className="mt-10 text-sm font-bold uppercase tracking-wide text-slate">Lesson history</h2>
+        <h2 className="mt-10 text-sm font-bold uppercase tracking-wide text-slate">
+          Lesson history
+        </h2>
         <ul className="mt-3 divide-y divide-border border-t border-b border-border">
           {history.map((l) => (
             <li key={l.id} className="flex items-center justify-between py-2.5">
@@ -94,7 +100,14 @@ function StudentDetail() {
           <div className="mt-3 flex gap-2">
             <select
               value={student.slotDay}
-              onChange={(e) => setWeeklySlot(student.id, Number(e.target.value), student.slotTime)}
+              onChange={async (e) => {
+                try {
+                  await api.setWeeklySlot(student.id, Number(e.target.value), student.slotTime);
+                  await refresh();
+                } catch (error) {
+                  toast.error(errorMessage(error));
+                }
+              }}
               className="border border-input bg-transparent px-2 py-1.5 text-sm outline-none focus:border-felt"
             >
               {DAYS.map(([v, label]) => (
@@ -105,7 +118,14 @@ function StudentDetail() {
             </select>
             <select
               value={student.slotTime}
-              onChange={(e) => setWeeklySlot(student.id, student.slotDay, e.target.value)}
+              onChange={async (e) => {
+                try {
+                  await api.setWeeklySlot(student.id, student.slotDay, e.target.value);
+                  await refresh();
+                } catch (error) {
+                  toast.error(errorMessage(error));
+                }
+              }}
               className="tnum border border-input bg-transparent px-2 py-1.5 text-sm outline-none focus:border-felt"
             >
               {ROW_TIMES.map((t) => (
@@ -124,8 +144,13 @@ function StudentDetail() {
               <button
                 key={s}
                 onClick={async () => {
-                  await setStudentStatus(student.id, s);
-                  toast(`Status set to ${s}`);
+                  try {
+                    await api.setStudentStatus(student.id, s);
+                    await refresh();
+                    toast(`Status set to ${s}`);
+                  } catch (error) {
+                    toast.error(errorMessage(error));
+                  }
                 }}
                 className={student.status === s ? "text-felt" : "text-slate hover:text-foreground"}
               >
@@ -138,13 +163,21 @@ function StudentDetail() {
         <section>
           <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Invoice</h2>
           <p className="mt-2 text-sm text-slate">
-            {student.invoiceSent ? "Invoice marked as sent." : "Not marked as sent."}
+            {student.pkg.used < student.pkg.size
+              ? "Available when the package is finished."
+              : "Ready to mark as sent."}
           </p>
           <button
-            disabled={student.invoiceSent}
+            disabled={student.pkg.used < student.pkg.size || student.pkg.id === null}
             onClick={async () => {
-              await markInvoiceSent(student.id);
-              toast("Invoice marked as sent");
+              if (student.pkg.id === null) return;
+              try {
+                await api.markInvoiceSent(student.pkg.id);
+                await refresh();
+                toast("Invoice marked as sent");
+              } catch (error) {
+                toast.error(errorMessage(error));
+              }
             }}
             className="mt-2 bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-40"
           >
@@ -189,9 +222,14 @@ function StudentDetail() {
             <AlertDialogAction
               onClick={async (e) => {
                 e.preventDefault();
-                await openPackage(student.id, packageSize);
-                setConfirmPackage(false);
-                toast("Package opened");
+                try {
+                  await api.openPackage(student.id, packageSize);
+                  await refresh();
+                  setConfirmPackage(false);
+                  toast("Package opened");
+                } catch (error) {
+                  toast.error(errorMessage(error));
+                }
               }}
             >
               Open package

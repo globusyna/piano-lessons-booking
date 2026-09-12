@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { usePianoStore } from "@/hooks/use-piano-store";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -21,13 +20,11 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const state = usePianoStore();
-
   return (
     <main className="mx-auto w-full max-w-[560px] px-6 pt-16 pb-20">
       <h1 className="font-display text-5xl leading-tight">Piano lesson calendar</h1>
       <p className="mt-4 text-slate">
-        Two surfaces, one studio. Everything below runs on demo data.
+        Two surfaces, one studio. Lessons and availability come from the booking server.
       </p>
 
       <section className="mt-10">
@@ -40,20 +37,16 @@ function Index() {
 
       <section className="mt-10">
         <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Student links</h2>
-        <ul className="mt-2 divide-y divide-border border-t border-b border-border">
-          {state.students.map((s) => (
-            <li key={s.id} className="flex items-center justify-between py-2.5">
-              <span>{s.name}</span>
-              <Link
-                to="/s/$token"
-                params={{ token: s.token }}
-                className="text-sm text-felt underline underline-offset-4"
-              >
-                /s/{s.token}
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <p className="mt-2 text-sm text-slate">
+          Students open the personal link supplied by their teacher.
+        </p>
+        <Link
+          to="/s/$token"
+          params={{ token: "anna" }}
+          className="mt-2 inline-block text-sm text-felt underline underline-offset-4"
+        >
+          Open a seeded student example
+        </Link>
       </section>
     </main>
   );

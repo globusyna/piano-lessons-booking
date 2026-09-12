@@ -1,14 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
-import { usePianoStore } from "@/hooks/use-piano-store";
-import {
-  ROW_TIMES,
-  addBlackout,
-  fmt,
-  removeBlackout,
-  setHours,
-} from "@/lib/piano-data";
+import { pianoKeys, useAvailability } from "@/hooks/use-piano-store";
+import { api, errorMessage } from "@/lib/api-client";
+import { ROW_TIMES, fmt } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/availability")({
   component: AvailabilityPage,
@@ -23,24 +19,40 @@ const DAYS = [
 ] as const;
 
 function AvailabilityPage() {
-  const state = usePianoStore();
+  const availability = useAvailability();
+  const queryClient = useQueryClient();
   const [date, setDate] = useState("");
   const [time, setTime] = useState(ROW_TIMES[0]!);
   const [note, setNote] = useState("");
 
   const toggle = async (day: number, t: string) => {
-    const current = state.hours[day] ?? [];
+    const current = availability.data?.hours[day] ?? [];
     const next = current.includes(t) ? current.filter((x) => x !== t) : [...current, t].sort();
-    await setHours(day, next);
+    try {
+      await api.setHours(day, next);
+      await queryClient.invalidateQueries({ queryKey: pianoKeys.availability() });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
   };
 
   const add = async () => {
     if (!date) return;
     const d = new Date(`${date}T${time}:00`);
-    await addBlackout(d.toISOString(), note.trim() || "Unavailable");
-    setNote("");
-    toast("Blackout added");
+    try {
+      await api.addBlackout(d.toISOString(), note.trim() || "Unavailable");
+      await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+      setNote("");
+      toast("Blackout added");
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
   };
+
+  if (availability.isPending) return <p className="text-sm text-slate">Loading availability…</p>;
+  if (availability.isError)
+    return <p className="text-sm text-felt">{errorMessage(availability.error)}</p>;
+  const state = availability.data;
 
   return (
     <div className="grid gap-12 lg:grid-cols-2">
@@ -128,8 +140,13 @@ function AvailabilityPage() {
                 </div>
                 <button
                   onClick={async () => {
-                    await removeBlackout(b.id);
-                    toast("Blackout removed");
+                    try {
+                      await api.removeBlackout(b.id);
+                      await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+                      toast("Blackout removed");
+                    } catch (error) {
+                      toast.error(errorMessage(error));
+                    }
                   }}
                   className="text-sm text-felt underline underline-offset-4"
                 >

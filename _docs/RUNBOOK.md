@@ -1,8 +1,7 @@
 # Local development runbook
 
-The repository-level `Makefile` is the main interface for local development. The frontend is
-currently fixture-backed, so it does not yet send requests to the backend; running both services
-still gives you the UI and API development environments side by side.
+The repository-level `Makefile` is the main interface for local development. The frontend sends
+requests to the FastAPI backend, so run both services to use the application.
 
 ## Prerequisites
 
@@ -54,6 +53,7 @@ The available variables and their defaults are:
 | `BACKEND_PORT` | `8000` |
 | `FRONTEND_HOST` | `localhost` |
 | `FRONTEND_PORT` | `5173` |
+| `API_BASE_URL` | `http://$(BACKEND_HOST):$(BACKEND_PORT)` |
 
 Run `make help` to see all Make targets.
 
@@ -102,6 +102,10 @@ seeded pages are:
 - Admin calendar: `http://localhost:5173/admin`
 - Students: `http://localhost:5173/admin/students`
 - Student view: `http://localhost:5173/s/anna`
+
+The frontend uses `http://127.0.0.1:8000` as its API base by default. The Makefile derives it from
+`BACKEND_HOST` and `BACKEND_PORT`; set `API_BASE_URL` to override it when using `make`. For direct
+frontend commands and production builds, set `VITE_API_BASE_URL` instead.
 
 ## Checks
 
