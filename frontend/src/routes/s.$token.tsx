@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { pianoKeys, useOpenSlots, useStudentView } from "@/hooks/use-piano-store";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
-import { fmt } from "@/lib/piano-data";
+import { PAUSE_WEEKS, fmt, pauseReturnKey } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/s/$token")({
   head: () => ({
@@ -40,6 +40,7 @@ function StudentPage() {
   const [movingId, setMovingId] = useState<number | null>(null);
   const [slotError, setSlotError] = useState<string | null>(null);
   const [pauseOpen, setPauseOpen] = useState(false);
+  const [pauseWeeks, setPauseWeeks] = useState(1);
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
   const viewQuery = useStudentView(token);
@@ -91,10 +92,10 @@ function StudentPage() {
   const onPause = async () => {
     setBusy(true);
     try {
-      await api.requestPause(token);
+      await api.requestPause(token, pauseWeeks);
       await queryClient.invalidateQueries({ queryKey: pianoKeys.studentView(token) });
       setPauseOpen(false);
-      toast("Break requested");
+      toast(`Break booked until ${fmt.dateOnly(pauseReturnKey(pauseWeeks))}`);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -111,8 +112,18 @@ function StudentPage() {
 
       {view.student.status === "paused" && (
         <Notice>
-          Your lessons are paused. Your remaining {view.package.size - view.package.used} lessons
-          stay on your account, and your teacher will be in touch to restart.
+          {view.pausedUntil ? (
+            <>
+              Paused until {fmt.dayOnly(view.pausedUntil)} {fmt.dateOnly(view.pausedUntil)}. Your
+              remaining {view.package.size - view.package.used} lessons have moved on by the same
+              number of weeks, so you keep every one of them.
+            </>
+          ) : (
+            <>
+              Your lessons are paused. Your remaining {view.package.size - view.package.used}{" "}
+              lessons stay on your account, and your teacher will be in touch to restart.
+            </>
+          )}
         </Notice>
       )}
       {view.student.status === "flagged" && (
@@ -227,10 +238,33 @@ function StudentPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Ask for a break</AlertDialogTitle>
             <AlertDialogDescription>
-              Your weekly time will be released and your teacher will be in touch. Your remaining
-              lessons stay on your account.
+              Choose how long. Your weekly time goes back on the calendar for those weeks, and every
+              lesson you have left moves on by the same number of weeks — you keep all of them.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div>
+            <div className="flex flex-wrap gap-2">
+              {PAUSE_WEEKS.map((weeks) => (
+                <button
+                  key={weeks}
+                  type="button"
+                  onClick={() => setPauseWeeks(weeks)}
+                  aria-pressed={pauseWeeks === weeks}
+                  className={
+                    pauseWeeks === weeks
+                      ? "tnum border border-felt px-3 py-2 text-sm text-felt"
+                      : "tnum border border-border px-3 py-2 text-sm hover:border-felt hover:text-felt"
+                  }
+                >
+                  {weeks} {weeks === 1 ? "week" : "weeks"}
+                </button>
+              ))}
+            </div>
+            <p className="mt-3 text-sm text-slate">
+              Your first lesson back is on or after {fmt.dayOnly(pauseReturnKey(pauseWeeks))}{" "}
+              {fmt.dateOnly(pauseReturnKey(pauseWeeks))}.
+            </p>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep my lessons</AlertDialogCancel>
             <AlertDialogAction

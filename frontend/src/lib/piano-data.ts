@@ -30,6 +30,7 @@ export type Student = {
   slotTime: string;
   pkg: Package;
   invoiceSent: boolean;
+  pausedUntil: string | null;
 };
 
 export type Blackout = { id: number; startsAt: string; note: string };
@@ -49,6 +50,7 @@ export type StudentView = {
   nextLesson: StudentLesson | null;
   lessons: StudentLesson[];
   canRequestPause: boolean;
+  pausedUntil: string | null;
 };
 
 export type AlertStudent = { id: number; name: string; status: StudentStatus };
@@ -93,6 +95,13 @@ export function dateKey(date: Date) {
   ).padStart(2, "0")}`;
 }
 
+// A "YYYY-MM-DD" date, read in the viewer's own timezone. `new Date(key)` reads
+// it as UTC midnight, which lands on the day before west of Greenwich.
+function fromDateKey(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
+}
+
 function timeOf(iso: string) {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -109,4 +118,15 @@ export const fmt = {
   date: (value: string) => dateFmt.format(new Date(value)),
   dateShort: (value: string) => dateShortFmt.format(new Date(value)),
   time: timeOf,
+  dayOnly: (value: string) => dayFmt.format(fromDateKey(value)),
+  dateOnly: (value: string) => dateFmt.format(fromDateKey(value)),
 };
+
+export const PAUSE_WEEKS = [1, 2, 3, 4, 5, 6];
+
+/** The date a break of `weeks` starting today would end, as a date key. */
+export function pauseReturnKey(weeks: number) {
+  const result = new Date();
+  result.setDate(result.getDate() + weeks * 7);
+  return dateKey(result);
+}

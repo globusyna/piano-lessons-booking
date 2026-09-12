@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { pianoKeys, useStudent } from "@/hooks/use-piano-store";
 import { api, errorMessage } from "@/lib/api-client";
-import { ROW_TIMES, fmt } from "@/lib/piano-data";
+import { PAUSE_WEEKS, ROW_TIMES, fmt, pauseReturnKey } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/students/$id")({
   component: StudentDetail,
@@ -38,6 +38,8 @@ function StudentDetail() {
   const queryClient = useQueryClient();
   const [packageSize, setPackageSize] = useState(10);
   const [confirmPackage, setConfirmPackage] = useState(false);
+  const [confirmPause, setConfirmPause] = useState(false);
+  const [pauseWeeks, setPauseWeeks] = useState(1);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: pianoKeys.all });
 
@@ -138,26 +140,74 @@ function StudentDetail() {
         </section>
 
         <section>
-          <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Status</h2>
-          <div className="mt-3 flex gap-4 text-sm">
-            {(["active", "paused", "flagged"] as const).map((s) => (
+          <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Break</h2>
+          {student.status === "paused" ? (
+            <div className="mt-3">
+              <p className="text-sm">
+                {student.pausedUntil
+                  ? `Paused until ${fmt.dayOnly(student.pausedUntil)} ${fmt.dateOnly(
+                      student.pausedUntil,
+                    )}`
+                  : "Paused"}
+              </p>
               <button
-                key={s}
                 onClick={async () => {
                   try {
-                    await api.setStudentStatus(student.id, s);
+                    await api.resumeStudent(student.id);
                     await refresh();
-                    toast(`Status set to ${s}`);
+                    toast("Break ended");
                   } catch (error) {
                     toast.error(errorMessage(error));
                   }
                 }}
-                className={student.status === s ? "text-felt" : "text-slate hover:text-foreground"}
+                className="mt-2 bg-felt px-3 py-2 text-sm text-felt-foreground"
               >
-                {s[0]!.toUpperCase() + s.slice(1)}
+                Resume now
               </button>
-            ))}
-          </div>
+              <p className="mt-2 text-sm text-slate">
+                Lessons stay where the break moved them. The original times are not taken back.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3">
+              <button
+                disabled={student.status === "flagged"}
+                onClick={() => setConfirmPause(true)}
+                className="bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-40"
+              >
+                Pause
+              </button>
+              <p className="mt-2 text-sm text-slate">
+                {student.status === "flagged"
+                  ? "Clear the flag before starting a break."
+                  : "Frees the weekly slot and moves the remaining lessons out by the same weeks."}
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Flag</h2>
+          <button
+            onClick={async () => {
+              const next = student.status === "flagged" ? "active" : "flagged";
+              try {
+                await api.setStudentStatus(student.id, next);
+                await refresh();
+                toast(next === "flagged" ? "Account flagged" : "Flag cleared");
+              } catch (error) {
+                toast.error(errorMessage(error));
+              }
+            }}
+            className="mt-3 border border-border px-3 py-2 text-sm hover:border-felt hover:text-felt"
+          >
+            {student.status === "flagged" ? "Clear flag" : "Flag account"}
+          </button>
+          <p className="mt-2 text-sm text-slate">
+            {student.status === "paused"
+              ? "Flagging a paused student ends the break on the record."
+              : "For an open question on the account. Stops moves and breaks."}
+          </p>
         </section>
 
         <section>
@@ -208,6 +258,59 @@ function StudentDetail() {
           </div>
         </section>
       </aside>
+
+      <AlertDialog open={confirmPause} onOpenChange={setConfirmPause}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pause {student.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The weekly slot is free for these weeks and every remaining lesson moves out by the
+              same number of weeks. Nothing is lost from the package.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div>
+            <div className="flex flex-wrap gap-2">
+              {PAUSE_WEEKS.map((weeks) => (
+                <button
+                  key={weeks}
+                  type="button"
+                  onClick={() => setPauseWeeks(weeks)}
+                  aria-pressed={pauseWeeks === weeks}
+                  className={
+                    pauseWeeks === weeks
+                      ? "tnum border border-felt px-3 py-2 text-sm text-felt"
+                      : "tnum border border-border px-3 py-2 text-sm hover:border-felt hover:text-felt"
+                  }
+                >
+                  {weeks} {weeks === 1 ? "week" : "weeks"}
+                </button>
+              ))}
+            </div>
+            <p className="mt-3 text-sm text-slate">
+              Back on {fmt.dayOnly(pauseReturnKey(pauseWeeks))}{" "}
+              {fmt.dateOnly(pauseReturnKey(pauseWeeks))}.
+            </p>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async (e) => {
+                e.preventDefault();
+                try {
+                  await api.pauseStudent(student.id, pauseWeeks);
+                  await refresh();
+                  setConfirmPause(false);
+                  toast(`Paused until ${fmt.dateOnly(pauseReturnKey(pauseWeeks))}`);
+                } catch (error) {
+                  toast.error(errorMessage(error));
+                }
+              }}
+            >
+              Pause
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={confirmPackage} onOpenChange={setConfirmPackage}>
         <AlertDialogContent>

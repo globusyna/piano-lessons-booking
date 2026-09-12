@@ -111,8 +111,11 @@ export const api = {
         body: json({ startsAt }),
       },
     ),
-  requestPause: (token: string) =>
-    request<{ ok: true; data: Student }>(`${studentPath(token)}/pause-request`, { method: "POST" }),
+  requestPause: (token: string, weeks: number) =>
+    request<{ ok: true; data: Student }>(`${studentPath(token)}/pause-request`, {
+      method: "POST",
+      body: json({ weeks }),
+    }),
 
   week: async (start: string) =>
     (await request<{ days: WeekDay[] }>(`/admin/api/week?start=${start}`, {}, true)).days,
@@ -140,6 +143,14 @@ export const api = {
     (await request<{ students: Student[] }>("/admin/students", {}, true)).students,
   student: (id: number) =>
     request<{ student: Student; lessons: Lesson[] }>(`/admin/students/${id}`, {}, true),
+  pauseStudent: (id: number, weeks: number) =>
+    request<{ ok: true; data: Student }>(
+      `/admin/students/${id}/pause`,
+      { method: "POST", body: json({ weeks }) },
+      true,
+    ),
+  resumeStudent: (id: number) =>
+    request<{ ok: true; data: Student }>(`/admin/students/${id}/resume`, { method: "POST" }, true),
   setStudentStatus: (id: number, status: StudentStatus) =>
     request<{ ok: true }>(
       `/admin/students/${id}/status`,
