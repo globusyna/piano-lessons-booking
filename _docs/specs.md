@@ -13,7 +13,7 @@
 | Counting | A lesson counts against the package **when it is booked**, not when it is held |
 | Numbering | Every lesson displays `3/10` to both teacher and student |
 | Day lock | A day locks at 23:59 local time. After lock, only the teacher can remove a lesson |
-| Reschedule | Student may move a lesson to any open slot from today through +3 weeks, while the original day is unlocked. Otherwise the lesson is burned (counted, no make-up) |
+| Reschedule | Student may request a move to any open slot from today through +3 weeks when the original lesson is at least 48 hours away. The teacher approves the request from the admin calendar. |
 | Package renewal | When a package is consumed, you get an email. Marking "invoice sent" appends the next 5 or 10 lessons on the same weekly slot |
 | Pause | Paused student books nothing; their weekly slot is released |
 | Flag | Flagged student cannot book or reschedule; existing lessons stay (per your call) |
@@ -62,7 +62,7 @@ A slot is **open** if it falls inside an `availability_rule`, is not inside a `b
 
 ## 4. Student screen (`/s/:token`)
 
-Single page: their upcoming lessons with numbers, a reschedule button on each unlocked lesson, the grid of open slots for the next 4 weeks, and a "request pause" button. No login, no password.
+Single page: their upcoming lessons with numbers, a reschedule button on each lesson at least 48 hours away, the grid of open slots for the next 4 weeks, and a "request pause" button. No login, no password.
 
 ---
 

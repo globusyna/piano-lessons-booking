@@ -32,7 +32,8 @@ export function LessonChip({
 type Props = {
   days: WeekDay[];
   /** Wrap a lesson cell, e.g. in a popover trigger (admin). */
-  renderLesson?: ((cell: Extract<WeekCell, { type: "lesson" }>, chip: ReactNode) => ReactNode) | undefined;
+  renderLesson?:
+    ((cell: Extract<WeekCell, { type: "lesson" }>, chip: ReactNode) => ReactNode) | undefined;
   /** Click handler for open cells (read-only grids pass nothing). */
   onOpenClick?: ((startsAt: string) => void) | undefined;
   /** Label a lesson chip (admin shows names, student shows numbers). */
@@ -72,7 +73,14 @@ export function TimeGrid({ days, renderLesson, onOpenClick, lessonTitle }: Props
   );
 }
 
-function Row({ time, row, days, renderLesson, onOpenClick, lessonTitle }: Props & { time: string; row: number }) {
+function Row({
+  time,
+  row,
+  days,
+  renderLesson,
+  onOpenClick,
+  lessonTitle,
+}: Props & { time: string; row: number }) {
   return (
     <>
       <div className="tnum border-r border-b border-border px-2 py-2 text-xs text-muted-foreground">
@@ -87,7 +95,7 @@ function Row({ time, row, days, renderLesson, onOpenClick, lessonTitle }: Props 
           const chip = (
             <LessonChip
               title={lessonTitle ? lessonTitle(cell) : cell.studentName}
-              subtitle={`${cell.seq}/${cell.size}`}
+              subtitle={`${cell.seq}/${cell.size}${cell.moveRequest ? " · Move request" : ""}`}
               time={fmt.time(cell.startsAt)}
             />
           );

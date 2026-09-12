@@ -94,7 +94,7 @@ def test_admin_calendar_shows_and_approves_move_request(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:
     view = client.get("/s/anna").json()
-    lesson = view["nextLesson"]
+    lesson = next(item for item in view["lessons"] if item["canMove"])
     today = datetime.now(STUDIO_TZ).date()
     requested_slot = client.get(
         "/s/anna/slots",
@@ -127,4 +127,6 @@ def test_admin_calendar_shows_and_approves_move_request(
     )
     assert approved.status_code == 200
     assert approved.json()["data"]["startsAt"] == requested_slot["startsAt"]
-    assert client.get("/s/anna").json()["nextLesson"]["requestedStartsAt"] is None
+    refreshed = client.get("/s/anna").json()
+    moved_lesson = next(item for item in refreshed["lessons"] if item["id"] == lesson["id"])
+    assert moved_lesson["requestedStartsAt"] is None

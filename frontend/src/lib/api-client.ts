@@ -1,6 +1,7 @@
 import type {
   Blackout,
   Lesson,
+  LessonMoveRequest,
   Package,
   Student,
   StudentStatus,
@@ -102,10 +103,13 @@ export const api = {
     return response.slots.map((slot) => slot.startsAt);
   },
   moveLesson: (token: string, lessonId: number, startsAt: string) =>
-    request<{ ok: true; data: Lesson }>(`${studentPath(token)}/lessons/${lessonId}/reschedule`, {
-      method: "POST",
-      body: json({ startsAt }),
-    }),
+    request<{ ok: true; data: LessonMoveRequest }>(
+      `${studentPath(token)}/lessons/${lessonId}/reschedule`,
+      {
+        method: "POST",
+        body: json({ startsAt }),
+      },
+    ),
   requestPause: (token: string) =>
     request<{ ok: true; data: Student }>(`${studentPath(token)}/pause-request`, { method: "POST" }),
 
@@ -157,6 +161,12 @@ export const api = {
     ),
   removeLesson: (id: number) =>
     request<{ ok: true }>(`/admin/lessons/${id}`, { method: "DELETE" }, true),
+  approveMoveRequest: (id: number) =>
+    request<{ ok: true; data: Lesson }>(
+      `/admin/move-requests/${id}/approve`,
+      { method: "POST" },
+      true,
+    ),
   alerts: async () =>
     (
       await request<{

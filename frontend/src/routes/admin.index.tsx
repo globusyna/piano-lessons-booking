@@ -25,6 +25,7 @@ export const Route = createFileRoute("/admin/")({
 function WeekView() {
   const [offset, setOffset] = useState(0);
   const [pendingRemove, setPendingRemove] = useState<{ id: number; name: string } | null>(null);
+  const [approvingRequestId, setApprovingRequestId] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const start = weekStart(offset);
   const startKey = dateKey(start);
@@ -39,6 +40,19 @@ function WeekView() {
       toast("Lesson removed");
     } catch (error) {
       toast.error(errorMessage(error));
+    }
+  };
+
+  const approveMoveRequest = async (requestId: number) => {
+    setApprovingRequestId(requestId);
+    try {
+      await api.approveMoveRequest(requestId);
+      await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+      toast("Move request approved");
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setApprovingRequestId(null);
     }
   };
 
@@ -85,6 +99,24 @@ function WeekView() {
                   <p className="tnum text-sm text-slate">
                     Lesson {cell.seq} of {cell.size}
                   </p>
+                  {cell.moveRequest && (
+                    <div className="mt-4 border-l-2 border-felt pl-3">
+                      <p className="text-sm font-medium">Move requested</p>
+                      <p className="tnum mt-1 text-sm text-slate">
+                        {fmt.day(cell.moveRequest.requestedStartsAt)}{" "}
+                        {fmt.dateShort(cell.moveRequest.requestedStartsAt)} ·{" "}
+                        {fmt.time(cell.moveRequest.requestedStartsAt)}
+                      </p>
+                      <button
+                        type="button"
+                        disabled={approvingRequestId === cell.moveRequest.id}
+                        onClick={() => void approveMoveRequest(cell.moveRequest!.id)}
+                        className="mt-3 bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-50"
+                      >
+                        Approve move request
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => setPendingRemove({ id: cell.lessonId, name: cell.studentName })}

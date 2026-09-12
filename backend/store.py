@@ -719,6 +719,11 @@ class DatabaseStore:
             lesson = session.get(LessonRecord, lesson_id)
             if lesson is None:
                 raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+            session.execute(
+                delete(LessonMoveRequestRecord).where(
+                    LessonMoveRequestRecord.lesson_id == lesson_id
+                )
+            )
             session.delete(lesson)
 
     def list_alerts(self) -> list[tuple[Student, Package]]:

@@ -43,7 +43,8 @@ def test_day_locks_only_after_the_local_day_ends() -> None:
 
 def test_student_can_request_a_move_to_an_open_slot(client: TestClient) -> None:
     view = client.get("/s/anna").json()
-    lesson_id = view["nextLesson"]["id"]
+    lesson = next(item for item in view["lessons"] if item["canMove"])
+    lesson_id = lesson["id"]
     today = datetime.now(STUDIO_TZ).date()
     slots = client.get(
         "/s/anna/slots",
@@ -59,13 +60,15 @@ def test_student_can_request_a_move_to_an_open_slot(client: TestClient) -> None:
     assert response.json()["data"]["requestedStartsAt"] == slots[0]["startsAt"]
     refreshed = client.get("/s/anna").json()
     requested_lesson = next(lesson for lesson in refreshed["lessons"] if lesson["id"] == lesson_id)
-    assert requested_lesson["startsAt"] == view["nextLesson"]["startsAt"]
+    assert requested_lesson["startsAt"] == lesson["startsAt"]
     assert requested_lesson["requestedStartsAt"] == slots[0]["startsAt"]
     assert requested_lesson["canMove"] is False
 
 
 def test_move_request_rejects_taken_slot_and_cross_student_access(client: TestClient) -> None:
-    anna_lesson = client.get("/s/anna").json()["nextLesson"]
+    anna_lesson = next(
+        lesson for lesson in client.get("/s/anna").json()["lessons"] if lesson["canMove"]
+    )
     other_lesson = client.get("/s/selma").json()["nextLesson"]
 
     taken = client.post(
@@ -83,7 +86,9 @@ def test_move_request_rejects_taken_slot_and_cross_student_access(client: TestCl
 
 
 def test_move_request_requires_at_least_48_hours_notice(client: TestClient) -> None:
-    lesson = client.get("/s/anna").json()["nextLesson"]
+    lesson = next(
+        item for item in client.get("/s/anna").json()["lessons"] if item["canMove"]
+    )
     lesson_record = store.lessons[lesson["id"]]
     with store._sessions.begin() as session:
         from backend.db_models import LessonRecord

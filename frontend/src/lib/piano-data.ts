@@ -15,6 +15,12 @@ export type Lesson = {
   status: "scheduled" | "done";
 };
 
+export type LessonMoveRequest = {
+  id: number;
+  lessonId: number;
+  requestedStartsAt: string;
+};
+
 export type Student = {
   id: number;
   name: string;
@@ -34,6 +40,7 @@ export type StudentLesson = {
   startsAt: string;
   status: "scheduled" | "done";
   canMove: boolean;
+  requestedStartsAt: string | null;
 };
 
 export type StudentView = {
@@ -52,6 +59,7 @@ export type WeekCell =
       studentName: string;
       seq: number;
       size: number;
+      moveRequest: LessonMoveRequest | null;
     }
   | { type: "blackout"; startsAt: string; note: string }
   | { type: "open"; startsAt: string };
