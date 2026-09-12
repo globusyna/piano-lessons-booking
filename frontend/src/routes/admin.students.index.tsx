@@ -3,7 +3,8 @@ import { useState } from "react";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
 import { PackageProgress } from "@/components/PackageProgress";
 import { StatusPill } from "@/components/StatusPill";
-import { usePianoStore } from "@/hooks/use-piano-store";
+import { useStudents } from "@/hooks/use-piano-store";
+import { errorMessage } from "@/lib/api-client";
 import type { StudentStatus } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/students/")({
@@ -14,9 +15,12 @@ const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri"];
 const FILTERS: Array<"all" | StudentStatus> = ["all", "active", "paused", "flagged"];
 
 function StudentsPage() {
-  const state = usePianoStore();
+  const students = useStudents();
   const [filter, setFilter] = useState<"all" | StudentStatus>("all");
-  const rows = state.students.filter((s) => filter === "all" || s.status === filter);
+
+  if (students.isPending) return <p className="text-sm text-slate">Loading students…</p>;
+  if (students.isError) return <p className="text-sm text-felt">{errorMessage(students.error)}</p>;
+  const rows = students.data.filter((s) => filter === "all" || s.status === filter);
 
   return (
     <div>

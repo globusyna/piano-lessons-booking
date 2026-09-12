@@ -1,5 +1,6 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { clearAdminToken, errorMessage, getAdminToken, login } from "@/lib/api-client";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
@@ -12,17 +13,19 @@ export const Route = createFileRoute("/admin")({
   component: AdminLayout,
 });
 
-const KEY = "piano-admin-session";
-
 function AdminLayout() {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [password, setPassword] = useState("");
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setSignedIn(sessionStorage.getItem(KEY) === "1");
+    setSignedIn(getAdminToken() !== null);
     setReady(true);
+    const handleUnauthenticated = () => setSignedIn(false);
+    window.addEventListener("piano-admin-unauthenticated", handleUnauthenticated);
+    return () => window.removeEventListener("piano-admin-unauthenticated", handleUnauthenticated);
   }, []);
 
   if (!ready) return null;
@@ -33,13 +36,17 @@ function AdminLayout() {
         <h1 className="text-2xl">Studio admin</h1>
         <form
           className="mt-6 space-y-3"
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
-            if (password === "piano") {
-              sessionStorage.setItem(KEY, "1");
+            setBusy(true);
+            setError(null);
+            try {
+              await login(password);
               setSignedIn(true);
-            } else {
-              setError(true);
+            } catch (loginError) {
+              setError(errorMessage(loginError));
+            } finally {
+              setBusy(false);
             }
           }}
         >
@@ -50,9 +57,13 @@ function AdminLayout() {
             placeholder="Password"
             className="w-full border border-input bg-transparent px-3 py-2 outline-none focus:border-felt"
           />
-          {error && <p className="text-sm text-felt">That password didn't work.</p>}
-          <button type="submit" className="w-full bg-felt px-4 py-2.5 text-felt-foreground">
-            Sign in
+          {error && <p className="text-sm text-felt">{error}</p>}
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full bg-felt px-4 py-2.5 text-felt-foreground disabled:opacity-50"
+          >
+            {busy ? "Signing in…" : "Sign in"}
           </button>
           <p className="text-xs text-slate">Demo password: piano</p>
         </form>
@@ -74,7 +85,7 @@ function AdminLayout() {
           <button
             type="button"
             onClick={() => {
-              sessionStorage.removeItem(KEY);
+              clearAdminToken();
               setSignedIn(false);
             }}
             className="ml-auto text-sm text-slate underline underline-offset-4"
