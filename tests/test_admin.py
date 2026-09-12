@@ -88,3 +88,43 @@ def test_alert_invoice_and_lesson_removal(client: TestClient, admin_headers: dic
     missing = client.delete(f"/admin/lessons/{lesson_id}", headers=admin_headers)
     assert removed.status_code == 200
     assert missing.status_code == 404
+
+
+def test_admin_calendar_shows_and_approves_move_request(
+    client: TestClient, admin_headers: dict[str, str]
+) -> None:
+    view = client.get("/s/anna").json()
+    lesson = view["nextLesson"]
+    today = datetime.now(STUDIO_TZ).date()
+    requested_slot = client.get(
+        "/s/anna/slots",
+        params={
+            "from": today.isoformat(),
+            "to": (today + timedelta(days=21)).isoformat(),
+            "lessonId": lesson["id"],
+        },
+    ).json()["slots"][0]
+    requested = client.post(
+        f"/s/anna/lessons/{lesson['id']}/reschedule",
+        json={"startsAt": requested_slot["startsAt"]},
+    ).json()["data"]
+
+    original_date = datetime.fromisoformat(lesson["startsAt"]).astimezone(STUDIO_TZ).date()
+    monday = original_date - timedelta(days=original_date.weekday())
+    week = client.get(
+        "/admin/api/week", params={"start": monday.isoformat()}, headers=admin_headers
+    ).json()
+    cell = next(
+        cell
+        for day in week["days"]
+        for cell in day["cells"]
+        if cell.get("lessonId") == lesson["id"]
+    )
+    assert cell["moveRequest"]["requestedStartsAt"] == requested_slot["startsAt"]
+
+    approved = client.post(
+        f"/admin/move-requests/{requested['id']}/approve", headers=admin_headers
+    )
+    assert approved.status_code == 200
+    assert approved.json()["data"]["startsAt"] == requested_slot["startsAt"]
+    assert client.get("/s/anna").json()["nextLesson"]["requestedStartsAt"] is None

@@ -70,6 +70,16 @@ class LessonRecord(Base):
     status: Mapped[str] = mapped_column(String(20), index=True)
 
 
+class LessonMoveRequestRecord(Base):
+    __tablename__ = "lesson_move_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lesson_id: Mapped[int] = mapped_column(
+        ForeignKey("lessons.id"), unique=True, index=True
+    )
+    requested_starts_at: Mapped[datetime] = mapped_column(UtcDateTime, unique=True, index=True)
+
+
 class BlackoutRecord(Base):
     __tablename__ = "blackouts"
 
