@@ -856,12 +856,48 @@ class DatabaseStore:
         with self._sessions.begin() as session:
             self._student_record(session, student_id).status = status.value
 
+    @staticmethod
+    def _next_weekly_slot_date(on_or_after: date, slot_day: int) -> date:
+        """The first `slot_day` falling on or after `on_or_after`."""
+        return on_or_after + timedelta(days=(slot_day - 1 - on_or_after.weekday()) % 7)
+
+    def _fresh_package_anchor(self, student: StudentRecord) -> date:
+        """Where a package with no history behind it starts: next week's slot."""
+        monday = self._monday(datetime.now(STUDIO_TZ).date()) + timedelta(weeks=1)
+        return monday + timedelta(days=student.slot_day - 1)
+
+    def _place_weekly_lessons(
+        self,
+        session: Session,
+        student: StudentRecord,
+        package_id: int,
+        *,
+        count: int,
+        first_seq: int,
+        first_date: date,
+    ) -> None:
+        """`count` lessons, one per week, from `first_date` on the weekly slot.
+
+        The only place lesson dates are generated, used both by opening a
+        package and by renewing one, so the two cannot drift apart. It is
+        blackout- and availability-blind on purpose: a generated date can land
+        on a blackout or outside the grid, exactly as it does today. Fixing that
+        is #11, and fixing it here fixes it for both callers at once.
+        """
+        for index in range(count):
+            self._add_lesson_record(
+                session,
+                student.id,
+                package_id,
+                first_seq + index,
+                self._at(first_date + timedelta(weeks=index), student.slot_time),
+            )
+
     def _open_package_record(
         self,
         session: Session,
         student: StudentRecord,
         size: int,
-        replacing_invoiced: bool = False,
     ) -> None:
         scheduled = session.scalar(
             select(func.count())
@@ -871,7 +907,7 @@ class DatabaseStore:
                 LessonRecord.status == LessonStatus.SCHEDULED.value,
             )
         )
-        if scheduled and not replacing_invoiced:
+        if scheduled:
             raise StoreError(409, "PACKAGE_OPEN", "This student already has scheduled lessons.")
         current_package = self._current_package(session, student.id)
         package = PackageRecord(
@@ -883,16 +919,14 @@ class DatabaseStore:
         )
         session.add(package)
         session.flush()
-        monday = self._monday(datetime.now(STUDIO_TZ).date()) + timedelta(weeks=1)
-        for index in range(size):
-            lesson_date = monday + timedelta(days=student.slot_day - 1, weeks=index)
-            self._add_lesson_record(
-                session,
-                student.id,
-                package.id,
-                index + 1,
-                self._at(lesson_date, student.slot_time),
-            )
+        self._place_weekly_lessons(
+            session,
+            student,
+            package.id,
+            count=size,
+            first_seq=1,
+            first_date=self._fresh_package_anchor(student),
+        )
 
     def open_package(self, student_id: int, size: int) -> None:
         try:
@@ -903,23 +937,95 @@ class DatabaseStore:
                 409, "SLOT_TAKEN", "A generated lesson time is already booked."
             ) from error
 
-    def mark_invoiced(self, package_id: int) -> None:
+    def renew_package(self, student_id: int, size: int) -> None:
+        """Top the student's current package up by `size` lessons (#13).
+
+        A renewal extends what is already there rather than starting something
+        new: `size` goes up on the existing row, `period_no` and `used` are left
+        alone, no already-scheduled lesson is touched, and `size` more lessons
+        are appended to the end of the schedule. So a 10-lesson package with 7
+        done, renewed by 10, reads 7/20 with the run of lessons continuing
+        unbroken -- which is the thing the old "open a new package" path could
+        not do while lessons were still scheduled.
+
+        What that costs: the row keeps no record of what was sold when. A 20 is
+        a 20, whether it was 10 + 10 or 8 + 8 + 4. That was decided on #13 and
+        an audit table can be added later without changing this.
+
+        Statuses do not block it. Renewing is the teacher acting on a student's
+        behalf; flagging only stops the *student's* own booking and moves, and a
+        paused student can be sold lessons for after the break -- which is why
+        the anchor below takes the pause into account.
+        """
         try:
-            with self._sessions.begin() as session:
-                package = session.get(PackageRecord, package_id)
-                if package is None:
-                    raise StoreError(404, "NOT_FOUND", "Package not found.")
-                if package.used < package.size:
-                    raise StoreError(
-                        400, "PACKAGE_NOT_CONSUMED", "This package is not ready to invoice."
+            with self._lock, self._sessions.begin() as session:
+                student = self._student_record(session, student_id)
+                package = self._current_package(session, student.id)
+                last = session.scalar(
+                    select(LessonRecord)
+                    .where(LessonRecord.package_id == package.id)
+                    .order_by(LessonRecord.starts_at.desc())
+                    .limit(1)
+                )
+                highest_seq = (
+                    session.scalar(
+                        select(func.max(LessonRecord.seq)).where(
+                            LessonRecord.package_id == package.id
+                        )
                     )
-                package.invoice_sent = True
-                student = self._student_record(session, package.student_id)
-                self._open_package_record(session, student, package.size, replacing_invoiced=True)
+                    or 0
+                )
+                # The day after the package's last lesson, done or scheduled --
+                # a renewal continues the schedule rather than restarting it. A
+                # package that never got any lessons (opened at student creation
+                # and never populated) starts where a fresh one would.
+                if last is None:
+                    earliest = self._fresh_package_anchor(student)
+                else:
+                    earliest = self._studio(last.starts_at).date() + timedelta(days=1)
+                # Never inside a break. #12's forward shift already pushed the
+                # scheduled lessons past `ends_on`, so this only bites when the
+                # package has no lessons left to follow -- but it is the real
+                # pause date either way, not an approximation of one.
+                paused_until = self._paused_until(session, student)
+                if paused_until is not None and paused_until > earliest:
+                    earliest = paused_until
+                package.size += size
+                # The package is no longer finished, so whatever invoice was
+                # sent for it does not cover it. It goes back on the list.
+                package.invoice_sent = False
+                self._place_weekly_lessons(
+                    session,
+                    student,
+                    package.id,
+                    count=size,
+                    first_seq=highest_seq + 1,
+                    first_date=self._next_weekly_slot_date(earliest, student.slot_day),
+                )
         except IntegrityError as error:
             raise StoreError(
                 409, "SLOT_TAKEN", "A generated lesson time is already booked."
             ) from error
+
+    def mark_invoiced(self, package_id: int) -> None:
+        """Record that the invoice for this package went out. Nothing else.
+
+        It used to open the next package as a side effect, which meant the
+        teacher never got to say how big that package should be -- it silently
+        reused the size of the one just finished -- and marking an invoice sent
+        quietly filled the calendar. Selling more lessons is now its own
+        deliberate action: `renew_package` to top this package up, or
+        `open_package` for a genuinely fresh one (#13).
+        """
+        with self._sessions.begin() as session:
+            package = session.get(PackageRecord, package_id)
+            if package is None:
+                raise StoreError(404, "NOT_FOUND", "Package not found.")
+            if package.used < package.size:
+                raise StoreError(
+                    400, "PACKAGE_NOT_CONSUMED", "This package is not ready to invoice."
+                )
+            package.invoice_sent = True
 
     def remove_lesson(self, lesson_id: int) -> None:
         with self._sessions.begin() as session:

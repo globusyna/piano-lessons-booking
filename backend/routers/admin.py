@@ -114,6 +114,17 @@ def open_student_package(student_id: int, body: PackageRequest) -> dict:
     return {"ok": True}
 
 
+@router.post("/students/{student_id}/package/renew")
+def renew_student_package(student_id: int, body: PackageRequest) -> dict:
+    """Top the student's current package up, rather than opening a new one.
+
+    Same body as opening a package, on purpose: what can be sold in one go is
+    still 5, 8 or 10 lessons, whatever total the package has reached.
+    """
+    store.renew_package(student_id, body.size)
+    return {"ok": True}
+
+
 @router.post("/students/{student_id}/pause")
 def pause_student(student_id: int, body: PauseRequest) -> dict:
     return {"ok": True, "data": store.pause_student(student_id, body.weeks)}
