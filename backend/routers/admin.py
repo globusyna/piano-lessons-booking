@@ -31,6 +31,7 @@ def get_week(start: date) -> dict:
             blackout = store.blackout_at(starts_at)
             if lesson:
                 student = store.student(lesson.student_id)
+                move_request = store.move_request_for_lesson(lesson.id)
                 cells.append(
                     {
                         "type": "lesson",
@@ -39,6 +40,7 @@ def get_week(start: date) -> dict:
                         "studentName": student.name,
                         "seq": lesson.seq,
                         "size": student.pkg.size,
+                        "moveRequest": move_request,
                     }
                 )
             elif blackout:
@@ -126,13 +128,29 @@ def remove_lesson(lesson_id: int) -> dict:
     return {"ok": True}
 
 
+@router.post("/move-requests/{request_id}/approve")
+def approve_move_request(request_id: int) -> dict:
+    lesson = store.approve_lesson_move(request_id)
+    return {"ok": True, "data": lesson}
+
+
 @router.get("/alerts")
 def list_alerts() -> dict:
-    alerts = [
+    move_alerts = [
         {
+            "type": "moveRequest",
+            "student": {"id": student.id, "name": student.name, "status": student.status},
+            "lesson": lesson,
+            "moveRequest": move_request,
+        }
+        for student, lesson, move_request in store.list_move_requests()
+    ]
+    invoice_alerts = [
+        {
+            "type": "invoice",
             "student": {"id": student.id, "name": student.name, "status": student.status},
             "package": package,
         }
         for student, package in store.list_alerts()
     ]
-    return {"alerts": alerts}
+    return {"alerts": [*move_alerts, *invoice_alerts]}

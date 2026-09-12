@@ -74,7 +74,7 @@ def test_student_admin_lifecycle(client: TestClient, admin_headers: dict[str, st
 
 def test_alert_invoice_and_lesson_removal(client: TestClient, admin_headers: dict[str, str]) -> None:
     alerts = client.get("/admin/alerts", headers=admin_headers)
-    alert = alerts.json()["alerts"][0]
+    alert = next(item for item in alerts.json()["alerts"] if item["type"] == "invoice")
     assert alert["student"]["name"] == "Jonas Berg"
 
     invoiced = client.post(
@@ -88,3 +88,53 @@ def test_alert_invoice_and_lesson_removal(client: TestClient, admin_headers: dic
     missing = client.delete(f"/admin/lessons/{lesson_id}", headers=admin_headers)
     assert removed.status_code == 200
     assert missing.status_code == 404
+
+
+def test_admin_calendar_shows_and_approves_move_request(
+    client: TestClient, admin_headers: dict[str, str]
+) -> None:
+    view = client.get("/s/anna").json()
+    lesson = next(item for item in view["lessons"] if item["canMove"])
+    today = datetime.now(STUDIO_TZ).date()
+    requested_slot = client.get(
+        "/s/anna/slots",
+        params={
+            "from": today.isoformat(),
+            "to": (today + timedelta(days=21)).isoformat(),
+            "lessonId": lesson["id"],
+        },
+    ).json()["slots"][0]
+    requested = client.post(
+        f"/s/anna/lessons/{lesson['id']}/reschedule",
+        json={"startsAt": requested_slot["startsAt"]},
+    ).json()["data"]
+
+    alerts = client.get("/admin/alerts", headers=admin_headers).json()["alerts"]
+    move_alert = next(item for item in alerts if item["type"] == "moveRequest")
+    assert move_alert["student"]["name"] == "Anna Lie"
+    assert move_alert["lesson"]["id"] == lesson["id"]
+    assert move_alert["moveRequest"] == requested
+
+    original_date = datetime.fromisoformat(lesson["startsAt"]).astimezone(STUDIO_TZ).date()
+    monday = original_date - timedelta(days=original_date.weekday())
+    week = client.get(
+        "/admin/api/week", params={"start": monday.isoformat()}, headers=admin_headers
+    ).json()
+    cell = next(
+        cell
+        for day in week["days"]
+        for cell in day["cells"]
+        if cell.get("lessonId") == lesson["id"]
+    )
+    assert cell["moveRequest"]["requestedStartsAt"] == requested_slot["startsAt"]
+
+    approved = client.post(
+        f"/admin/move-requests/{requested['id']}/approve", headers=admin_headers
+    )
+    assert approved.status_code == 200
+    assert approved.json()["data"]["startsAt"] == requested_slot["startsAt"]
+    remaining_alerts = client.get("/admin/alerts", headers=admin_headers).json()["alerts"]
+    assert all(item["type"] != "moveRequest" for item in remaining_alerts)
+    refreshed = client.get("/s/anna").json()
+    moved_lesson = next(item for item in refreshed["lessons"] if item["id"] == lesson["id"])
+    assert moved_lesson["requestedStartsAt"] is None

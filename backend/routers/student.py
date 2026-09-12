@@ -23,7 +23,16 @@ def _view(token: str) -> StudentView:
             seq=lesson.seq,
             startsAt=lesson.starts_at,
             status=lesson.status,
-            canMove=student.status.value == "active" and not store.is_day_locked(lesson.starts_at),
+            canMove=(
+                student.status.value == "active"
+                and store.can_request_lesson_move(lesson.starts_at)
+                and store.move_request_for_lesson(lesson.id) is None
+            ),
+            requestedStartsAt=(
+                request.requested_starts_at
+                if (request := store.move_request_for_lesson(lesson.id))
+                else None
+            ),
         )
         for lesson in upcoming
     ]
@@ -58,8 +67,8 @@ def get_open_slots(
 
 @router.post("/{token}/lessons/{lesson_id}/reschedule")
 def reschedule_lesson(token: str, lesson_id: int, body: RescheduleRequest) -> dict:
-    lesson = store.move_lesson(token, lesson_id, body.starts_at)
-    return {"ok": True, "data": lesson}
+    request = store.request_lesson_move(token, lesson_id, body.starts_at)
+    return {"ok": True, "data": request}
 
 
 @router.post("/{token}/pause-request")

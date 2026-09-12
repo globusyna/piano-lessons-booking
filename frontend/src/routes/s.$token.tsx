@@ -38,7 +38,6 @@ export const Route = createFileRoute("/s/$token")({
 function StudentPage() {
   const { token } = Route.useParams();
   const [movingId, setMovingId] = useState<number | null>(null);
-  const [movedId, setMovedId] = useState<number | null>(null);
   const [slotError, setSlotError] = useState<string | null>(null);
   const [pauseOpen, setPauseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -77,12 +76,10 @@ function StudentPage() {
     setBusy(true);
     try {
       await api.moveLesson(token, movingId, startsAt);
-      setMovedId(movingId);
       setMovingId(null);
       setSlotError(null);
       await queryClient.invalidateQueries({ queryKey: pianoKeys.studentView(token) });
-      toast("Lesson moved");
-      setTimeout(() => setMovedId(null), 1400);
+      toast("Sent request to Andrea");
     } catch (error) {
       setSlotError(errorMessage(error));
       await queryClient.invalidateQueries({ queryKey: pianoKeys.slots(token, movingId) });
@@ -157,6 +154,13 @@ function StudentPage() {
                 {fmt.date(view.nextLesson.startsAt)} · lesson {view.nextLesson.seq} of{" "}
                 {view.package.size}
               </p>
+              {view.nextLesson.requestedStartsAt && (
+                <Notice>
+                  Sent request to Andrea for {fmt.day(view.nextLesson.requestedStartsAt)}{" "}
+                  {fmt.dateShort(view.nextLesson.requestedStartsAt)} at{" "}
+                  {fmt.time(view.nextLesson.requestedStartsAt)}.
+                </Notice>
+              )}
               {view.nextLesson.canMove && (
                 <button
                   type="button"
@@ -175,12 +179,7 @@ function StudentPage() {
             </h2>
             <ul className="mt-3 divide-y divide-border border-t border-b border-border">
               {view.lessons.map((l) => (
-                <li
-                  key={l.id}
-                  className={`flex items-center justify-between py-3 ${
-                    movedId === l.id ? "settle-in" : ""
-                  }`}
-                >
+                <li key={l.id} className="flex items-center justify-between gap-4 py-3">
                   <div>
                     <p className="tnum">
                       {fmt.day(l.startsAt)} {fmt.dateShort(l.startsAt)} · {fmt.time(l.startsAt)}
@@ -188,6 +187,12 @@ function StudentPage() {
                     <p className="tnum text-sm text-slate">
                       Lesson {l.seq} of {view.package.size}
                     </p>
+                    {l.requestedStartsAt && (
+                      <p className="mt-1 text-sm text-felt">
+                        Move requested for {fmt.dayShort(l.requestedStartsAt)}{" "}
+                        {fmt.dateShort(l.requestedStartsAt)} at {fmt.time(l.requestedStartsAt)}
+                      </p>
+                    )}
                   </div>
                   {l.canMove && (
                     <button

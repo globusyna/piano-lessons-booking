@@ -62,6 +62,13 @@ class StudentLesson(ApiModel):
     starts_at: datetime = Field(alias="startsAt")
     status: LessonStatus
     can_move: bool = Field(alias="canMove")
+    requested_starts_at: datetime | None = Field(default=None, alias="requestedStartsAt")
+
+
+class LessonMoveRequest(ApiModel):
+    id: int
+    lesson_id: int = Field(alias="lessonId")
+    requested_starts_at: datetime = Field(alias="requestedStartsAt")
 
 
 class StudentView(ApiModel):

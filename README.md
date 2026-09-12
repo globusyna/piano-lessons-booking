@@ -24,7 +24,7 @@ Next lesson — the hero. Day, date, time, and lesson number. This is the answer
 
 Upcoming lessons — the rest of the package as a simple list, each with number and date, each with a "Move" action if the lesson is still movable.
 
-Move flow — triggered from a lesson. Replaces the list with open slots grouped by day across the next 4 weeks. Pick one, confirm, return to the list with the moved lesson highlighted.
+Move flow — triggered from a lesson at least 48 hours before it starts. Replaces the list with open slots grouped by day across the next 4 weeks. Picking one sends a request to Andrea; the original lesson stays in place until she approves it from the admin calendar.
 
 Take a break — a quiet link at the bottom, not a button. Opens a confirm dialog explaining what happens (slot released, teacher notified).
 
@@ -32,7 +32,7 @@ States to design: active student with lessons; paused student; flagged student; 
 
 Admin
 
-Screen Path Purpose Week /admin Default view. Time grid, lessons placed on it, blackouts shaded, open slots empty. Navigate by week. Click any lesson to open a detail popover with Remove. Availability /admin/availability Weekly hours grid (set once, edited rarely) plus a list of blackout ranges with add/remove. Students /admin/students Table: name, status, weekly slot, package progress, copyable personal link. Filter by status. Student detail /admin/students/:id Set weekly slot, open a package, pause/flag, mark invoice sent, full lesson history. Alerts /admin/alerts Packages consumed and awaiting an invoice. Each row has one action: "Mark invoice sent". This is the only place the teacher needs to visit on a schedule.
+Screen Path Purpose Week /admin Default view. Time grid, lessons placed on it, blackouts shaded, open slots empty. Navigate by week. Click any lesson to open a detail popover with Remove. Availability /admin/availability Weekly hours grid (set once, edited rarely) plus a list of blackout ranges with add/remove. Students /admin/students Table: name, status, weekly slot, package progress, copyable personal link. Filter by status. Student detail /admin/students/:id Set weekly slot, open a package, pause/flag, mark invoice sent, full lesson history. Alerts /admin/alerts Pending lesson move requests and packages consumed and awaiting an invoice. Each row has one action: approve the move or mark the invoice sent.
 
 3. Component inventory
 
@@ -117,7 +117,7 @@ Paused and flagged students see their lessons but no actions. Say what is true a
 
 Write plainly, sentence case, active voice. A few fixed strings:
 
-Move button: Move lesson → toast Lesson moved
+Move button: Move lesson → toast Sent request to Andrea
 
 Pause: Ask for a break → dialog body: "Your weekly time will be released and your teacher will be in touch. Your remaining lessons stay on your account."
 

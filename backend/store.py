@@ -15,12 +15,21 @@ from .database import Base, create_database_engine, create_session_factory
 from .db_models import (
     AvailabilitySlotRecord,
     BlackoutRecord,
+    LessonMoveRequestRecord,
     LessonRecord,
     PackageRecord,
     StudentRecord,
     TeacherSettingsRecord,
 )
-from .models import Blackout, Lesson, LessonStatus, Package, Student, StudentStatus
+from .models import (
+    Blackout,
+    Lesson,
+    LessonMoveRequest,
+    LessonStatus,
+    Package,
+    Student,
+    StudentStatus,
+)
 
 
 STUDIO_TZ = ZoneInfo("Europe/Oslo")
@@ -287,6 +296,13 @@ class DatabaseStore:
     def _blackout_model(self, record: BlackoutRecord) -> Blackout:
         return Blackout(id=record.id, startsAt=self._studio(record.starts_at), note=record.note)
 
+    def _move_request_model(self, record: LessonMoveRequestRecord) -> LessonMoveRequest:
+        return LessonMoveRequest(
+            id=record.id,
+            lessonId=record.lesson_id,
+            requestedStartsAt=self._studio(record.requested_starts_at),
+        )
+
     @staticmethod
     def _student_record(session: Session, student_id: int) -> StudentRecord:
         record = session.get(StudentRecord, student_id)
@@ -358,6 +374,15 @@ class DatabaseStore:
             )
             return self._lesson_model(record) if record else None
 
+    def move_request_for_lesson(self, lesson_id: int) -> LessonMoveRequest | None:
+        with self._sessions() as session:
+            record = session.scalar(
+                select(LessonMoveRequestRecord).where(
+                    LessonMoveRequestRecord.lesson_id == lesson_id
+                )
+            )
+            return self._move_request_model(record) if record else None
+
     def blackout_at(self, starts_at: datetime) -> Blackout | None:
         with self._sessions() as session:
             record = session.scalar(
@@ -375,6 +400,9 @@ class DatabaseStore:
     def is_day_locked(self, starts_at: datetime) -> bool:
         return starts_at.astimezone(STUDIO_TZ).date() < datetime.now(STUDIO_TZ).date()
 
+    def can_request_lesson_move(self, starts_at: datetime) -> bool:
+        return starts_at.astimezone(STUDIO_TZ) >= datetime.now(STUDIO_TZ) + timedelta(hours=48)
+
     def in_move_window(self, starts_at: datetime) -> bool:
         local = starts_at.astimezone(STUDIO_TZ)
         today = datetime.now(STUDIO_TZ).date()
@@ -389,6 +417,7 @@ class DatabaseStore:
         from_date: date,
         to_date: date,
         exclude_lesson_id: int | None = None,
+        exclude_move_request_id: int | None = None,
     ) -> list[datetime]:
         if from_date > to_date:
             raise StoreError(
@@ -404,6 +433,15 @@ class DatabaseStore:
         if exclude_lesson_id is not None:
             lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
         taken = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
+        move_request_query = select(LessonMoveRequestRecord)
+        if exclude_move_request_id is not None:
+            move_request_query = move_request_query.where(
+                LessonMoveRequestRecord.id != exclude_move_request_id
+            )
+        taken.update(
+            self._studio(record.requested_starts_at)
+            for record in session.scalars(move_request_query)
+        )
         blocked = {
             self._studio(record.starts_at) for record in session.scalars(select(BlackoutRecord))
         }
@@ -435,7 +473,9 @@ class DatabaseStore:
         with self._sessions() as session:
             return self._open_slots(session, from_date, to_date, exclude_lesson_id)
 
-    def move_lesson(self, token: str, lesson_id: int, starts_at: datetime) -> Lesson:
+    def request_lesson_move(
+        self, token: str, lesson_id: int, starts_at: datetime
+    ) -> LessonMoveRequest:
         try:
             with self._lock, self._sessions.begin() as session:
                 student = self._student_for_token_record(session, token)
@@ -446,6 +486,8 @@ class DatabaseStore:
                         "INVALID_TOKEN",
                         "This link isn't valid. Ask your teacher for a new one.",
                     )
+                if lesson.status != LessonStatus.SCHEDULED.value:
+                    raise StoreError(403, "LESSON_NOT_MOVABLE", "That lesson cannot be moved.")
                 if student.status == StudentStatus.PAUSED.value:
                     raise StoreError(
                         403,
@@ -458,8 +500,23 @@ class DatabaseStore:
                         "STUDENT_FLAGGED",
                         "There's an open question on your account. Your teacher will be in touch.",
                     )
-                if self.is_day_locked(lesson.starts_at):
-                    raise StoreError(403, "DAY_LOCKED", "That day is closed for changes.")
+                if not self.can_request_lesson_move(lesson.starts_at):
+                    raise StoreError(
+                        403,
+                        "MOVE_NOTICE_REQUIRED",
+                        "Lessons cannot be moved less than 48 hours before they start.",
+                    )
+                pending = session.scalar(
+                    select(LessonMoveRequestRecord).where(
+                        LessonMoveRequestRecord.lesson_id == lesson.id
+                    )
+                )
+                if pending is not None:
+                    raise StoreError(
+                        409,
+                        "MOVE_ALREADY_REQUESTED",
+                        "A move request is already waiting for Andrea's approval.",
+                    )
                 if not self.in_move_window(starts_at):
                     raise StoreError(
                         400, "OUTSIDE_WINDOW", "That time is outside the booking window."
@@ -476,14 +533,49 @@ class DatabaseStore:
                         "SLOT_TAKEN",
                         "Someone just took that time. Here are the times still open.",
                     )
-                lesson.starts_at = starts_at
+                request = LessonMoveRequestRecord(
+                    lesson_id=lesson.id, requested_starts_at=starts_at
+                )
+                session.add(request)
                 session.flush()
-                result = self._lesson_model(lesson)
+                result = self._move_request_model(request)
             return result
         except IntegrityError as error:
             raise StoreError(
                 409, "SLOT_TAKEN", "Someone just took that time. Here are the times still open."
             ) from error
+
+    def approve_lesson_move(self, request_id: int) -> Lesson:
+        try:
+            with self._lock, self._sessions.begin() as session:
+                request = session.get(LessonMoveRequestRecord, request_id)
+                if request is None:
+                    raise StoreError(404, "NOT_FOUND", "Move request not found.")
+                lesson = session.get(LessonRecord, request.lesson_id)
+                if lesson is None:
+                    session.delete(request)
+                    raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+                requested_date = self._studio(request.requested_starts_at).date()
+                available = self._open_slots(
+                    session,
+                    requested_date,
+                    requested_date,
+                    lesson.id,
+                    request.id,
+                )
+                if self._studio(request.requested_starts_at) not in available:
+                    raise StoreError(
+                        409,
+                        "SLOT_TAKEN",
+                        "That requested time is no longer available.",
+                    )
+                lesson.starts_at = request.requested_starts_at
+                session.delete(request)
+                session.flush()
+                result = self._lesson_model(lesson)
+            return result
+        except IntegrityError as error:
+            raise StoreError(409, "SLOT_TAKEN", "That requested time is no longer available.") from error
 
     def pause(self, token: str) -> Student:
         with self._sessions.begin() as session:
@@ -627,7 +719,37 @@ class DatabaseStore:
             lesson = session.get(LessonRecord, lesson_id)
             if lesson is None:
                 raise StoreError(404, "NOT_FOUND", "Lesson not found.")
+            session.execute(
+                delete(LessonMoveRequestRecord).where(
+                    LessonMoveRequestRecord.lesson_id == lesson_id
+                )
+            )
             session.delete(lesson)
+
+    def list_move_requests(
+        self,
+    ) -> list[tuple[Student, Lesson, LessonMoveRequest]]:
+        with self._sessions() as session:
+            requests = session.scalars(
+                select(LessonMoveRequestRecord).order_by(
+                    LessonMoveRequestRecord.requested_starts_at,
+                    LessonMoveRequestRecord.id,
+                )
+            ).all()
+            result = []
+            for request in requests:
+                lesson = session.get(LessonRecord, request.lesson_id)
+                if lesson is None:
+                    continue
+                student_record = self._student_record(session, lesson.student_id)
+                result.append(
+                    (
+                        self._student_model(session, student_record),
+                        self._lesson_model(lesson),
+                        self._move_request_model(request),
+                    )
+                )
+            return result
 
     def list_alerts(self) -> list[tuple[Student, Package]]:
         with self._sessions() as session:
