@@ -6,14 +6,14 @@ Each task is sized (S = under half a day, M = about a day, L = multi-day) and li
 dependencies. Nothing here has been implemented — this document is for review and
 prioritisation. Tick a task off by linking the PR that closed it.
 
-**Suggested order:** B-53 → B-20 → B-01 → B-10 → B-11 → B-02 → B-03 → B-30 → B-54 → the rest.
+**Suggested order:** B-53 (#34) → B-20 (#15) → B-01 (#9) → B-10 (#12) → B-11 (#13) → B-02 (#10) → B-03 (#11) → B-30 (#22) → B-54 (#35) → the rest.
 
 ---
 
 ## P0 — The core loop does not close
 
-### B-01 · Lessons never complete, so packages never consume
-**Size:** M · **Depends on:** B-20
+### B-01 · Lessons never complete, so packages never consume — #9
+**Size:** M · **Depends on:** B-20 (#15)
 
 `package.used` is written once in `_seed_if_empty` (`backend/store.py:153`) and never changes
 again. No endpoint and no job ever moves a lesson from `scheduled` to `done`. Consequences for
@@ -31,10 +31,10 @@ their `used` values are hard-coded.
   scheduled job or a catch-up performed on read (pick one and document the trade-off).
 - An admin endpoint can mark a single lesson done / undo it, for the case where a lesson is
   cancelled on the day.
-- Tests cover the transition with a controlled clock (see B-51), including the boundary where the
+- Tests cover the transition with a controlled clock (see B-51 (#32)), including the boundary where the
   final lesson of a package passes and the invoice alert appears.
 
-### B-02 · Move requests can be approved but never declined
+### B-02 · Move requests can be approved but never declined — #10
 **Size:** M
 
 `POST /admin/move-requests/{id}/approve` is the only action on a request. There is no decline, and
@@ -56,7 +56,7 @@ The teacher's only escape is to delete the lesson entirely.
 - Decline is available in both the alerts list and the week-view popover, next to the existing
   approve button.
 
-### B-03 · Generated packages ignore blackouts and availability
+### B-03 · Generated packages ignore blackouts and availability — #11
 **Size:** M
 
 `_open_package_record` (`backend/store.py:652`) places `size` lessons on `slot_day`/`slot_time` for
@@ -75,8 +75,8 @@ even when the real cause is a holiday.
 
 ## P1 — Student management
 
-### B-10 · Pause a student for 1–6 weeks
-**Size:** L · **Depends on:** B-20
+### B-10 · Pause a student for 1–6 weeks — #12
+**Size:** L · **Depends on:** B-20 (#15)
 
 `store.pause()` (`backend/store.py:580`) flips `status` to `paused` and stops there. Nothing is
 released, nothing resumes, and there is no duration. The pause is therefore both permanent and
@@ -109,8 +109,8 @@ weekly slot should be released.
 - Tests cover: pause across a package boundary, early resume, automatic expiry, and a pause
   requested while a move request is pending.
 
-### B-11 · Renew a package by topping up the lessons already available
-**Size:** L · **Depends on:** B-20, B-03
+### B-11 · Renew a package by topping up the lessons already available — #13
+**Size:** L · **Depends on:** B-20 (#15), B-03 (#11)
 
 When a student confirms their next package, the 5 or 10 new lessons should be **added to the
 lessons they already have**. Neither existing path does that:
@@ -143,8 +143,8 @@ topped up from 10 to 20 satisfies neither.
 - Tests cover 5-lesson and 10-lesson top-ups, a top-up over a blackout, and a top-up for a paused
   student.
 
-### B-12 · Round out student management
-**Size:** M · **Depends on:** B-10
+### B-12 · Round out student management — #14
+**Size:** M · **Depends on:** B-10 (#12)
 
 Gaps in `/admin/students/{id}` once pause and renewal exist:
 
@@ -165,8 +165,8 @@ Gaps in `/admin/students/{id}` once pause and renewal exist:
 
 ## P2 — Data model and reliability
 
-### B-20 · Add migrations
-**Size:** M · **Blocks:** B-01, B-10, B-11, B-12
+### B-20 · Add migrations — #15
+**Size:** M · **Blocks:** B-01 (#9), B-10 (#12), B-11 (#13), B-12 (#14)
 
 `DatabaseStore.__init__` calls `Base.metadata.create_all` (`backend/store.py:54`), which creates
 missing tables and nothing else — it will not add a column to a table that already exists.
@@ -181,7 +181,7 @@ Every P1 task adds columns or tables. Without migrations, an existing `piano.db`
 - `_upgrade_legacy_seed_data` is retired into a migration or deleted.
 - Document the upgrade path for an existing local `piano.db`.
 
-### B-21 · The studio timezone is hard-coded
+### B-21 · The studio timezone is hard-coded — #16
 **Size:** S
 
 `STUDIO_TZ = ZoneInfo("Europe/Oslo")` is a module constant (`backend/store.py:35`) while
@@ -192,7 +192,7 @@ time on the spring gap.
 
 **Acceptance** — timezone read from settings; a test covers a lesson on each DST boundary.
 
-### B-22 · The week grid is pinned to a duplicated `ROW_TIMES`
+### B-22 · The week grid is pinned to a duplicated `ROW_TIMES` — #17
 **Size:** S
 
 `ROW_TIMES` is declared in `backend/store.py:36` and again in `frontend/src/lib/piano-data.ts:75`.
@@ -203,7 +203,7 @@ seen or clicked.
 **Acceptance** — grid rows derive from stored availability (or `ROW_TIMES` is served by the API and
 consumed by the frontend); the duplicate constant is gone.
 
-### B-23 · Weekends are impossible by constraint
+### B-23 · Weekends are impossible by constraint — #18
 **Size:** S
 
 `weekday >= 1 AND weekday <= 5` on availability and `slot_day >= 1 AND slot_day <= 5` on students
@@ -213,7 +213,7 @@ anywhere, so it reads as an accident.
 
 **Acceptance** — either widen to 1–7, or record the restriction in the specs as a decision.
 
-### B-24 · `SLOT_TAKEN` is doing too many jobs
+### B-24 · `SLOT_TAKEN` is doing too many jobs — #19
 **Size:** S
 
 The global `UniqueConstraint("starts_at")` on `lessons` is the only concurrency guard, so every
@@ -223,7 +223,7 @@ lessons, which is correct for a single teacher but worth stating.
 
 **Acceptance** — distinct error codes per cause; the catch-all mapping is narrowed to real races.
 
-### B-25 · The store is a module-level singleton built at import
+### B-25 · The store is a module-level singleton built at import — #20
 **Size:** M
 
 `store = DatabaseStore()` at `backend/store.py:780` connects to a database and seeds it as a side
@@ -235,7 +235,7 @@ that mistake easy.
 **Acceptance** — the store is constructed in the FastAPI lifespan and injected as a dependency;
 tests build their own instance instead of relying on import order.
 
-### B-26 · Seeding runs against any empty database
+### B-26 · Seeding runs against any empty database — #21
 **Size:** S
 
 `_seed_if_empty` runs on every startup and populates any database it finds empty, including a fresh
@@ -248,7 +248,7 @@ off by default.
 
 ## P3 — Security
 
-### B-30 · The JWT secret has a working default
+### B-30 · The JWT secret has a working default — #22
 **Size:** S
 
 `JWT_SECRET = os.getenv("PIANO_JWT_SECRET", "local-development-secret-change-me")`
@@ -257,8 +257,8 @@ anyone who has read this repository. The runbook mentions setting it; nothing en
 
 **Acceptance** — startup fails when the variable is unset outside an explicit dev mode.
 
-### B-31 · The demo password is printed on screen
-**Size:** S · **Depends on:** B-26
+### B-31 · The demo password is printed on screen — #23
+**Size:** S · **Depends on:** B-26 (#21)
 
 The seeded teacher password is `piano`, and both the landing page
 (`frontend/src/routes/index.tsx:35`) and the admin login form
@@ -267,7 +267,7 @@ is deployed anywhere.
 
 **Acceptance** — both strings are behind a build-time demo flag, default off.
 
-### B-32 · Student tokens are guessable and unthrottled
+### B-32 · Student tokens are guessable and unthrottled — #24
 **Size:** M
 
 `create_student` uses `secrets.token_urlsafe(24)` — fine. The seeded tokens are `anna`, `jonas`,
@@ -276,9 +276,9 @@ enumerated freely. The token is the whole credential: it exposes the student's n
 the ability to move lessons.
 
 **Acceptance** — rate limiting on the student routes; seeded tokens are random (printed by the seed
-command); token rotation exists (B-12).
+command); token rotation exists (B-12 (#14)).
 
-### B-33 · Admin token in `sessionStorage`, with no refresh
+### B-33 · Admin token in `sessionStorage`, with no refresh — #25
 **Size:** M
 
 `frontend/src/lib/api-client.ts:17` stores the bearer token in `sessionStorage`, readable by any
@@ -289,7 +289,7 @@ lost.
 **Acceptance** — evaluate an httpOnly cookie plus CSRF token; add refresh or a warning before
 expiry.
 
-### B-34 · CORS is hard-coded to localhost
+### B-34 · CORS is hard-coded to localhost — #26
 **Size:** S
 
 Four localhost origins are compiled in with `allow_credentials=True`
@@ -301,7 +301,7 @@ Four localhost origins are compiled in with `allow_credentials=True`
 
 ## P4 — Performance
 
-### B-40 · `/admin/api/week` is N+1, badly
+### B-40 · `/admin/api/week` is N+1, badly — #27
 **Size:** M
 
 `get_week` (`backend/routers/admin.py:20`) loops 5 days × 7 times and, per cell, calls
@@ -311,7 +311,7 @@ Four localhost origins are compiled in with `allow_credentials=True`
 
 **Acceptance** — the endpoint issues a bounded number of queries; a test asserts the count.
 
-### B-41 · The student view queries each move request twice
+### B-41 · The student view queries each move request twice — #28
 **Size:** S
 
 `_view` in `backend/routers/student.py:12` calls `store.move_request_for_lesson(lesson.id)` once
@@ -319,14 +319,14 @@ for `canMove` and again for `requestedStartsAt`, per lesson.
 
 **Acceptance** — fetched once per lesson, or once for the whole set.
 
-### B-42 · `list_students` fetches packages one student at a time
+### B-42 · `list_students` fetches packages one student at a time — #29
 **Size:** S
 
 The `students` property (`backend/store.py:69`) calls `_current_package` per record.
 
 **Acceptance** — one grouped query.
 
-### B-43 · The admin router reaches into store internals
+### B-43 · The admin router reaches into store internals — #30
 **Size:** S
 
 `backend/routers/admin.py:29` and `:50` call `store._at(...)`, a private helper.
@@ -337,7 +337,7 @@ The `students` property (`backend/store.py:69`) calls `_current_package` per rec
 
 ## P5 — Testing, docs, tooling
 
-### B-50 · No frontend tests exist
+### B-50 · No frontend tests exist — #31
 **Size:** M
 
 `frontend/package.json` has no test runner and `frontend/src` contains no test files. Untested:
@@ -348,7 +348,7 @@ and every non-active student state.
 covering the move flow including `SLOT_TAKEN`, the paused/flagged/finished/invalid-token states,
 and the admin auth gate.
 
-### B-51 · The backend suite cannot control time
+### B-51 · The backend suite cannot control time — #32
 **Size:** M
 
 18 tests pass, but every one of them derives "now" from the real clock — `test_admin.py` computes
@@ -359,7 +359,7 @@ differently on a Friday than on a Monday and cannot test a DST weekend at all.
 **Acceptance** — a clock seam (injected `now()` or `freezegun`, which needs approval per
 `AGENTS.md`) with tests pinned to fixed dates covering each boundary.
 
-### B-52 · `openapi.yaml` can drift silently
+### B-52 · `openapi.yaml` can drift silently — #33
 **Size:** S
 
 A 32 KB hand-maintained `openapi.yaml` sits at the root with nothing comparing it to the schema
@@ -367,7 +367,7 @@ FastAPI generates.
 
 **Acceptance** — a test asserts equivalence, or the file is generated by `make build`.
 
-### B-53 · `AGENTS.md` points at documents that do not exist
+### B-53 · `AGENTS.md` points at documents that do not exist — #34
 **Size:** S
 
 `AGENTS.md` instructs contributors to read `_docs/process.md` for how work is organised and
@@ -376,7 +376,7 @@ rules are unfollowable — and every test task above inherits the ambiguity.
 
 **Acceptance** — both documents written, or the references corrected.
 
-### B-54 · Nothing runs `make check`
+### B-54 · Nothing runs `make check` — #35
 **Size:** S
 
 `make check` runs tests, lint and build. There is no `.github/` directory, so it runs only when
@@ -384,7 +384,7 @@ somebody remembers.
 
 **Acceptance** — a workflow runs `make check` on push and pull request.
 
-### B-55 · The README is the design brief
+### B-55 · The README is the design brief — #36
 **Size:** S
 
 `README.md` is the frontend design brief pasted verbatim with Lovable boilerplate appended. It
@@ -395,7 +395,7 @@ still documents API shapes that have moved on — the `/s/:token` response it sh
 **Acceptance** — README covers what the project is, how to run it and where the docs are; the brief
 moves to `_docs/design-brief.md` and is marked as the original brief rather than current truth.
 
-### B-56 · Prune scaffolding that is not used
+### B-56 · Prune scaffolding that is not used — #37
 **Size:** S
 
 `frontend/src/components/ui/` holds roughly 45 shadcn components, of which the app imports a
@@ -408,7 +408,7 @@ belongs to that toolchain too.
 **Acceptance** — unused components, dependencies and editor scaffolding removed; the build still
 passes.
 
-### B-57 · Decide what happens about notifications
+### B-57 · Decide what happens about notifications — #38
 **Size:** S (decision) / L (implementation)
 
 `_docs/specs.md` §1 and §6 describe email as part of the loop — an invoice email to the teacher
@@ -419,7 +419,7 @@ owed.
 
 **Acceptance** — the choice is written down in the specs; if email stays, it gets its own task.
 
-### B-58 · Response envelopes are inconsistent
+### B-58 · Response envelopes are inconsistent — #39
 **Size:** S
 
 Mutations return `{ok: true, data}`, `/s/{token}` returns the bare object, `/admin/students`
