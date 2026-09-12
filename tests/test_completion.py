@@ -166,25 +166,39 @@ def test_a_full_package_completes_the_lesson_without_counting_it(
 def test_paused_and_flagged_students_lessons_complete_like_everyone_elses(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:
-    paused = _create_student(client, admin_headers, "Paused Pupil", 1, "14:45")
+    """Completion reads the lesson's own state, never the student's.
+
+    The paused student is the seeded one, who is `paused` with no pause row
+    behind them. That is the only way a paused student can still have a lesson
+    falling due inside the break: pausing through `/pause` shifts every one of
+    their lessons past `ends_on` (#12), so there is nothing left inside it.
+    """
     flagged = _create_student(client, admin_headers, "Flagged Pupil", 1, "16:15")
-    for student, status in ((paused, "paused"), (flagged, "flagged")):
-        changed = client.post(
-            f"/admin/students/{student['id']}/status",
-            json={"status": status},
-            headers=admin_headers,
-        )
-        assert changed.status_code == 200
-    latest = max(_starts_at(paused["lessons"][0]), _starts_at(flagged["lessons"][0]))
+    changed = client.post(
+        f"/admin/students/{flagged['id']}/status",
+        json={"status": "flagged"},
+        headers=admin_headers,
+    )
+    assert changed.status_code == 200
+    students = client.get("/admin/students", headers=admin_headers).json()["students"]
+    paused_id = next(item["id"] for item in students if item["status"] == "paused")
+    before = client.get(f"/admin/students/{paused_id}", headers=admin_headers).json()
+    paused_lesson = next(item for item in before["lessons"] if item["status"] == "scheduled")
 
-    with clock.pinned(latest):
-        students = client.get("/admin/students", headers=admin_headers).json()["students"]
+    with clock.pinned(_starts_at(paused_lesson)):
+        paused_after = client.get(f"/admin/students/{paused_id}", headers=admin_headers).json()
+    with clock.pinned(_starts_at(flagged["lessons"][0])):
+        flagged_after = client.get(
+            f"/admin/students/{flagged['id']}", headers=admin_headers
+        ).json()
 
-    by_id = {item["id"]: item for item in students}
-    assert by_id[paused["id"]]["status"] == "paused"
-    assert by_id[paused["id"]]["pkg"]["used"] == 1
-    assert by_id[flagged["id"]]["status"] == "flagged"
-    assert by_id[flagged["id"]]["pkg"]["used"] == 1
+    assert paused_after["student"]["status"] == "paused"
+    assert paused_after["student"]["pkg"]["used"] == before["student"]["pkg"]["used"] + 1
+    assert next(
+        item for item in paused_after["lessons"] if item["id"] == paused_lesson["id"]
+    )["status"] == "done"
+    assert flagged_after["student"]["status"] == "flagged"
+    assert flagged_after["student"]["pkg"]["used"] == 1
 
 
 def test_a_deleted_lesson_is_never_completed(

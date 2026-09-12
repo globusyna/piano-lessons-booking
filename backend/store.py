@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from threading import RLock
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,6 +20,7 @@ from .db_models import (
     LessonMoveRequestRecord,
     LessonRecord,
     PackageRecord,
+    StudentPauseRecord,
     StudentRecord,
     TeacherSettingsRecord,
 )
@@ -40,18 +41,18 @@ ROW_TIMES = ["14:00", "14:45", "15:30", "16:15", "17:00", "17:45", "18:30"]
 
 
 class StudioClock:
-    """The one "now" the lesson completion logic reads.
+    """The one "now" the catch-up-on-read logic reads.
 
-    Completion is the only behaviour in the store that has to be driven from a
-    test at an exact instant -- the moment a package's last lesson passes -- and
-    a test cannot wait for that instant to arrive. So the completion code path
-    asks this object for the time instead of calling ``datetime.now`` inline,
-    and a test pins it:
+    Two behaviours in the store have to be driven from a test at an exact
+    instant -- the moment a package's last lesson passes (#9), and the moment a
+    student's break runs out (#12) -- and a test cannot wait for either instant
+    to arrive. So both code paths ask this object for the time instead of
+    calling ``datetime.now`` inline, and a test pins it:
 
         with clock.pinned(last_lesson_starts_at):
             client.get("/admin/alerts", headers=admin_headers)
 
-    Deliberately narrow: only the completion path reads it today. Giving the
+    Deliberately narrow: only the two catch-up paths read it today. Giving the
     whole backend a controllable clock is #32 (B-51), and this seam is meant to
     be what that issue grows, not something it has to undo.
     """
@@ -268,6 +269,7 @@ class DatabaseStore:
             id=record.id,
             name=record.name,
             status=StudentStatus(record.status),
+            pausedUntil=self._paused_until(session, record),
             token=record.token,
             slotDay=record.slot_day,
             slotTime=record.slot_time,
@@ -573,21 +575,220 @@ class DatabaseStore:
         except IntegrityError as error:
             raise StoreError(409, "SLOT_TAKEN", "That requested time is no longer available.") from error
 
-    def pause(self, token: str) -> Student:
-        with self._sessions.begin() as session:
-            student = self._student_for_token_record(session, token)
-            if student.status != StudentStatus.ACTIVE.value:
-                code = (
-                    "STUDENT_PAUSED"
-                    if student.status == StudentStatus.PAUSED.value
-                    else "STUDENT_FLAGGED"
+    # --- Pausing a student -------------------------------------------------
+    #
+    # A pause is a shift, not a flag. Setting `students.status` to `paused` and
+    # stopping there is the bug #12 exists to fix: the lessons stayed on the
+    # calendar, so the weekly slot everybody had been told was released was
+    # still occupied.
+    #
+    # Pausing for `weeks` moves every one of the student's still-scheduled
+    # lessons forward by exactly that many weeks, in the same transaction as
+    # the status change. That one shift does both jobs: it leaves the paused
+    # weeks empty -- so `_open_slots` offers those times to any other student
+    # the moment the pause is written, with no separate "release" step to
+    # forget -- and it pushes the rest of the package out by the same amount,
+    # so the break costs the student nothing. `seq`, `used` and the number of
+    # lessons never change.
+    #
+    # Resuming, early or when `ends_on` arrives, moves nothing back. Lessons
+    # keep the dates the shift gave them even when the original slot is still
+    # free; reclaiming it is #45, deliberately not decided here.
+
+    PAUSE_WEEKS = range(1, 7)
+
+    @classmethod
+    def _pause_weeks(cls, value: object) -> int:
+        """The requested break length, or one named error for everything else.
+
+        The range lives here rather than on the request model so that 0, -2, 7
+        and "three" all come back as `INVALID_PAUSE_LENGTH` instead of a
+        generic validation failure -- the endpoints take `weeks` untyped and
+        hand it straight over. `bool` is rejected explicitly because `True` is
+        an `int` in Python, and `{"weeks": true}` is not a break length.
+        """
+        if isinstance(value, bool) or not isinstance(value, int) or value not in cls.PAUSE_WEEKS:
+            raise StoreError(
+                400, "INVALID_PAUSE_LENGTH", "A break is a whole number of weeks, from 1 to 6."
+            )
+        return value
+
+    @staticmethod
+    def _latest_pause_record(session: Session, student_id: int) -> StudentPauseRecord | None:
+        return session.scalar(
+            select(StudentPauseRecord)
+            .where(StudentPauseRecord.student_id == student_id)
+            .order_by(StudentPauseRecord.starts_on.desc(), StudentPauseRecord.id.desc())
+            .limit(1)
+        )
+
+    @classmethod
+    def _paused_until(cls, session: Session, record: StudentRecord) -> date | None:
+        """The date a paused student is due back, when a pause row says so.
+
+        None for anyone who is not paused, and also for a student whose status
+        was set to `paused` without a pause row behind it -- the seeded studio
+        has one, and a database written before this table existed can too.
+        """
+        if record.status != StudentStatus.PAUSED.value:
+            return None
+        pause = cls._latest_pause_record(session, record.id)
+        if pause is None or pause.ended_early_at is not None:
+            return None
+        return pause.ends_on
+
+    def _shift_lessons_forward(
+        self, session: Session, student_id: int, from_date: date, weeks: int
+    ) -> None:
+        """Move the student's scheduled lessons from `from_date` on by `weeks`.
+
+        Latest lesson first, one statement each. Every lesson lands on the slot
+        the following one is about to vacate, so shifting in ascending order
+        would collide with the student's own un-moved lessons on a `starts_at`
+        that is unique across the whole studio; descending order never does.
+        The updates are issued explicitly rather than by mutating the mapped
+        objects because the order the unit of work would flush them in is not
+        the order this needs.
+
+        The shift is applied to the studio-local date and recombined with the
+        same local time, not added to the instant, so a lesson keeps its
+        wall-clock time across a daylight-saving change.
+        """
+        scheduled = session.scalars(
+            select(LessonRecord).where(
+                LessonRecord.student_id == student_id,
+                LessonRecord.status == LessonStatus.SCHEDULED.value,
+            )
+        ).all()
+        upcoming = [
+            lesson for lesson in scheduled if self._studio(lesson.starts_at).date() >= from_date
+        ]
+        for lesson in sorted(upcoming, key=lambda record: record.starts_at, reverse=True):
+            local = self._studio(lesson.starts_at)
+            session.execute(
+                update(LessonRecord)
+                .where(LessonRecord.id == lesson.id)
+                .values(
+                    starts_at=self._at(
+                        local.date() + timedelta(weeks=weeks), local.strftime("%H:%M")
+                    )
                 )
-                raise StoreError(
-                    403, code, "A break cannot be requested in the current account state."
+            )
+        # The statements above went round the mapped objects, so what the
+        # session still holds for those lessons is out of date.
+        session.expire_all()
+
+    def pause_student(self, student_id: int, weeks: object) -> Student:
+        length = self._pause_weeks(weeks)
+        # Settle the clock before shifting anything. A lesson whose time has
+        # already passed is completed here rather than dragged forward, so a
+        # pause never moves a lesson that already happened, and never leaves one
+        # sitting in the past to be swept and charged to the package a moment
+        # later by the very next read.
+        self.catch_up()
+        try:
+            with self._lock, self._sessions.begin() as session:
+                student = self._student_record(session, student_id)
+                if student.status == StudentStatus.PAUSED.value:
+                    raise StoreError(403, "STUDENT_PAUSED", "These lessons are already paused.")
+                if student.status == StudentStatus.FLAGGED.value:
+                    raise StoreError(
+                        403,
+                        "STUDENT_FLAGGED",
+                        "There's an open question on this account. Sort that out first.",
+                    )
+                # A pause never silently cancels a move request: the student
+                # would watch it vanish without an answer. The teacher approves
+                # or declines it, then the break can be taken.
+                pending = session.scalar(
+                    select(LessonMoveRequestRecord.id)
+                    .join(LessonRecord, LessonRecord.id == LessonMoveRequestRecord.lesson_id)
+                    .where(LessonRecord.student_id == student.id)
+                    .limit(1)
                 )
-            student.status = StudentStatus.PAUSED.value
+                if pending is not None:
+                    raise StoreError(
+                        409,
+                        "MOVE_REQUEST_PENDING",
+                        "There's a move request waiting for an answer. Settle that first.",
+                    )
+                starts_on = clock.now().date()
+                ends_on = starts_on + timedelta(weeks=length)
+                self._shift_lessons_forward(session, student.id, starts_on, length)
+                session.add(
+                    StudentPauseRecord(
+                        student_id=student.id,
+                        weeks=length,
+                        starts_on=starts_on,
+                        ends_on=ends_on,
+                        created_at=clock.now(),
+                        ended_early_at=None,
+                    )
+                )
+                student.status = StudentStatus.PAUSED.value
+                session.flush()
+                result = self._student_model(session, student)
+            return result
+        except IntegrityError as error:
+            # A shifted lesson landed on a time another student already holds.
+            # The transaction rolls back whole: no lesson is left half-moved and
+            # no pause is recorded.
+            raise StoreError(
+                409, "SLOT_TAKEN", "A lesson would land on a time that is already taken."
+            ) from error
+
+    def resume_student(self, student_id: int) -> Student:
+        """End a break now, leaving every lesson where the pause put it."""
+        self.catch_up()
+        with self._lock, self._sessions.begin() as session:
+            student = self._student_record(session, student_id)
+            if student.status != StudentStatus.PAUSED.value:
+                raise StoreError(409, "STUDENT_NOT_PAUSED", "These lessons are not paused.")
+            pause = self._latest_pause_record(session, student.id)
+            if pause is not None and pause.ended_early_at is None:
+                pause.ended_early_at = clock.now()
+            student.status = StudentStatus.ACTIVE.value
             session.flush()
             return self._student_model(session, student)
+
+    def expire_due_pauses(self) -> int:
+        """Return every student whose break has run out to `active`, on read.
+
+        The same catch-up-on-read pattern as `complete_due_lessons`, reading the
+        same clock, for the same reason: nothing in this app notices time
+        passing by itself, and a scheduled job is infrastructure it does not
+        have (#43). A break covers `[starts_on, ends_on)`, so it is over once
+        today has reached `ends_on`.
+
+        No lesson moves here -- the shift already happened when the pause was
+        requested. `ended_early_at` is left null, and that is what tells a
+        break that simply ran out apart from one `resume_student` ended.
+        """
+        today = clock.now().date()
+        with self._lock, self._sessions.begin() as session:
+            paused = session.scalars(
+                select(StudentRecord).where(StudentRecord.status == StudentStatus.PAUSED.value)
+            ).all()
+            resumed = 0
+            for student in paused:
+                pause = self._latest_pause_record(session, student.id)
+                # Only the most recent pause decides. An older, expired row must
+                # never end a break that was requested after it.
+                if pause is None or pause.ended_early_at is not None or pause.ends_on > today:
+                    continue
+                student.status = StudentStatus.ACTIVE.value
+                resumed += 1
+            return resumed
+
+    def catch_up(self) -> None:
+        """Everything the clock has quietly made true since the last read.
+
+        The read endpoints call this single method so the two catch-ups cannot
+        drift apart: lessons whose time has passed are completed, and breaks
+        that have run out are lifted.
+        """
+        self.complete_due_lessons()
+        self.expire_due_pauses()
 
     def set_hours(self, day: int, times: list[str]) -> None:
         with self._sessions.begin() as session:
@@ -642,6 +843,16 @@ class DatabaseStore:
             student.slot_time = slot_time
 
     def set_student_status(self, student_id: int, status: StudentStatus) -> None:
+        # Exactly one path into a pause. This endpoint only ever flipped the
+        # column, which is precisely the bug #12 fixes, so the bug cannot come
+        # back through it: `pause_student` is the only thing that both flips the
+        # status and frees the slot.
+        if status == StudentStatus.PAUSED:
+            raise StoreError(
+                400,
+                "USE_PAUSE_ENDPOINT",
+                "Pause a student with POST /admin/students/{id}/pause, which frees their slot.",
+            )
         with self._sessions.begin() as session:
             self._student_record(session, student_id).status = status.value
 

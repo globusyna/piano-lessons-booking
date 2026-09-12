@@ -2,7 +2,13 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Query
 
-from ..models import RescheduleRequest, StudentLesson, StudentSummary, StudentView
+from ..models import (
+    PauseRequest,
+    RescheduleRequest,
+    StudentLesson,
+    StudentSummary,
+    StudentView,
+)
 from ..store import STUDIO_TZ, StoreError, store
 
 
@@ -11,8 +17,9 @@ router = APIRouter(prefix="/s", tags=["Student"])
 
 def _view(token: str) -> StudentView:
     # Catch-up-on-read: the student's own page is one of the reads that closes
-    # out lessons whose time has passed (see DatabaseStore.complete_due_lessons).
-    store.complete_due_lessons()
+    # out lessons whose time has passed and lifts a break that has run out
+    # (see DatabaseStore.catch_up).
+    store.catch_up()
     student = store.student_for_token(token)
     now = datetime.now(STUDIO_TZ)
     upcoming = [
@@ -45,6 +52,7 @@ def _view(token: str) -> StudentView:
         nextLesson=lessons[0] if lessons else None,
         lessons=lessons,
         canRequestPause=student.status.value == "active" and bool(lessons),
+        pausedUntil=student.paused_until,
     )
 
 
@@ -75,6 +83,6 @@ def reschedule_lesson(token: str, lesson_id: int, body: RescheduleRequest) -> di
 
 
 @router.post("/{token}/pause-request")
-def request_pause(token: str) -> dict:
-    student = store.pause(token)
-    return {"ok": True, "data": student}
+def request_pause(token: str, body: PauseRequest) -> dict:
+    student = store.student_for_token(token)
+    return {"ok": True, "data": store.pause_student(student.id, body.weeks)}

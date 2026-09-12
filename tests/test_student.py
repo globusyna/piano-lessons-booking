@@ -115,11 +115,13 @@ def test_move_request_requires_at_least_48_hours_notice(client: TestClient) -> N
 
 
 def test_pause_changes_student_state_and_cannot_repeat(client: TestClient) -> None:
-    response = client.post("/s/anna/pause-request")
-    repeated = client.post("/s/anna/pause-request")
+    response = client.post("/s/anna/pause-request", json={"weeks": 3})
+    repeated = client.post("/s/anna/pause-request", json={"weeks": 1})
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "paused"
-    assert client.get("/s/anna").json()["canRequestPause"] is False
+    view = client.get("/s/anna").json()
+    assert view["canRequestPause"] is False
+    assert view["pausedUntil"] == (datetime.now(STUDIO_TZ).date() + timedelta(weeks=3)).isoformat()
     assert repeated.status_code == 403
     assert repeated.json()["error"]["code"] == "STUDENT_PAUSED"
