@@ -1,0 +1,1006 @@
+openapi: 3.1.0
+info:
+  title: Piano Lesson Booking API
+  version: 1.0.0
+  description: |
+    The HTTP API expected by the fixture-backed client in `frontend/`.
+
+    Teacher endpoints require an authenticated admin session. Student endpoints
+    do not use the admin session: the unguessable token in the URL is the
+    student's credential and must not be logged or exposed to another student.
+
+    Dates and times are evaluated in the studio's configured time zone. Date-time
+    values are RFC 3339 strings with an offset. The server, rather than the
+    frontend, determines availability, day locks, and whether a lesson can move.
+servers:
+  - url: /
+    description: Same origin as the frontend
+tags:
+  - name: Student
+    description: Token-authenticated student actions
+  - name: Admin calendar
+    description: Teacher calendar and availability management
+  - name: Admin students
+    description: Teacher student and package management
+  - name: Admin alerts
+    description: Packages awaiting an invoice
+
+paths:
+  /s/{token}:
+    get:
+      tags: [Student]
+      summary: Get the student's lesson page data
+      operationId: getStudentView
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/StudentToken"
+      responses:
+        "200":
+          description: Student, package, and upcoming lesson data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentView"
+        "404":
+          $ref: "#/components/responses/InvalidToken"
+
+  /s/{token}/slots:
+    get:
+      tags: [Student]
+      summary: List slots available for rescheduling
+      description: |
+        Returns only bookable slots. Slots outside the move window, locked days,
+        blackouts, and occupied slots are omitted. When `lessonId` is supplied,
+        the lesson's current slot is excluded from the occupied-slot calculation.
+      operationId: getStudentOpenSlots
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/StudentToken"
+        - name: from
+          in: query
+          required: true
+          description: First local calendar date to consider, inclusive.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: Last local calendar date to consider, inclusive.
+          schema:
+            type: string
+            format: date
+        - name: lessonId
+          in: query
+          required: false
+          description: Lesson being moved.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: Available slots sorted by start time
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [slots]
+                properties:
+                  slots:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OpenSlot"
+        "404":
+          $ref: "#/components/responses/InvalidToken"
+
+  /s/{token}/lessons/{lessonId}/reschedule:
+    post:
+      tags: [Student]
+      summary: Move a lesson to an open slot
+      description: |
+        The server must atomically verify that the destination remains open.
+        A stale selection returns `SLOT_TAKEN`; the frontend keeps the picker
+        open and requests the slot list again.
+      operationId: rescheduleStudentLesson
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/StudentToken"
+        - $ref: "#/components/parameters/LessonId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [startsAt]
+              properties:
+                startsAt:
+                  type: string
+                  format: date-time
+                  examples: ["2026-09-17T15:15:00+02:00"]
+      responses:
+        "200":
+          description: Lesson moved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LessonMutationSuccess"
+        "400":
+          description: The move is outside the allowed window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: The original day is locked, or the student is paused or flagged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/InvalidToken"
+        "409":
+          description: The destination slot is no longer available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /s/{token}/pause-request:
+    post:
+      tags: [Student]
+      summary: Ask for a break and release the weekly slot
+      operationId: requestStudentPause
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/StudentToken"
+      responses:
+        "200":
+          description: Student paused and teacher notified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentMutationSuccess"
+        "403":
+          description: The student cannot request a pause in the current state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/InvalidToken"
+
+  /admin/api/week:
+    get:
+      tags: [Admin calendar]
+      summary: Get a week of calendar cells
+      operationId: getAdminWeek
+      security:
+        - adminSession: []
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: Monday of the requested week.
+          schema:
+            type: string
+            format: date
+          example: "2026-09-14"
+      responses:
+        "200":
+          description: Five-day calendar data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days]
+                properties:
+                  days:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WeekDay"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /admin/availability:
+    get:
+      tags: [Admin calendar]
+      summary: Get weekly hours and blackouts
+      operationId: getAdminAvailability
+      security:
+        - adminSession: []
+      responses:
+        "200":
+          description: Current availability configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Availability"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    post:
+      tags: [Admin calendar]
+      summary: Replace the available times for one weekday
+      operationId: setAdminAvailability
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [day, times]
+              properties:
+                day:
+                  $ref: "#/components/schemas/Weekday"
+                times:
+                  type: array
+                  uniqueItems: true
+                  items:
+                    $ref: "#/components/schemas/LocalTime"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /admin/blackout:
+    post:
+      tags: [Admin calendar]
+      summary: Add a blackout slot
+      operationId: addAdminBlackout
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [startsAt, note]
+              properties:
+                startsAt:
+                  type: string
+                  format: date-time
+                note:
+                  type: string
+                  minLength: 1
+                  examples: [Dentist]
+      responses:
+        "200":
+          description: Blackout added
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, data]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  data:
+                    $ref: "#/components/schemas/Blackout"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /admin/blackout/{blackoutId}:
+    delete:
+      tags: [Admin calendar]
+      summary: Remove a blackout slot
+      operationId: removeAdminBlackout
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/BlackoutId"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/students:
+    get:
+      tags: [Admin students]
+      summary: List students
+      operationId: listAdminStudents
+      security:
+        - adminSession: []
+      responses:
+        "200":
+          description: All students
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [students]
+                properties:
+                  students:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminStudent"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    post:
+      tags: [Admin students]
+      summary: Create a student and personal access token
+      description: Included for the student-creation route defined by the frontend brief.
+      operationId: createAdminStudent
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, slotDay, slotTime]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                slotDay:
+                  $ref: "#/components/schemas/Weekday"
+                slotTime:
+                  $ref: "#/components/schemas/LocalTime"
+      responses:
+        "201":
+          description: Student created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentMutationSuccess"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /admin/students/{studentId}:
+    get:
+      tags: [Admin students]
+      summary: Get a student and lesson history
+      operationId: getAdminStudent
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/StudentId"
+      responses:
+        "200":
+          description: Student detail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [student, lessons]
+                properties:
+                  student:
+                    $ref: "#/components/schemas/AdminStudent"
+                  lessons:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Lesson"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/students/{studentId}/slot:
+    post:
+      tags: [Admin students]
+      summary: Set a student's weekly slot
+      operationId: setAdminStudentSlot
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/StudentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [slotDay, slotTime]
+              properties:
+                slotDay:
+                  $ref: "#/components/schemas/Weekday"
+                slotTime:
+                  $ref: "#/components/schemas/LocalTime"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/students/{studentId}/package:
+    post:
+      tags: [Admin students]
+      summary: Open a package and schedule its lessons
+      description: The frontend offers package sizes 5, 8, and 10.
+      operationId: openAdminStudentPackage
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/StudentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [size]
+              properties:
+                size:
+                  type: integer
+                  enum: [5, 8, 10]
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+        "409":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/students/{studentId}/status:
+    post:
+      tags: [Admin students]
+      summary: Change a student's status
+      operationId: setAdminStudentStatus
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/StudentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  $ref: "#/components/schemas/StudentStatus"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "400":
+          $ref: "#/components/responses/MutationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/packages/{packageId}/invoiced:
+    post:
+      tags: [Admin alerts, Admin students]
+      summary: Mark an invoice sent
+      description: Marks the consumed package invoiced and appends the next package.
+      operationId: markAdminPackageInvoiced
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/PackageId"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/lessons/{lessonId}:
+    delete:
+      tags: [Admin calendar]
+      summary: Remove a lesson
+      description: The teacher may remove a lesson even when its day is locked.
+      operationId: removeAdminLesson
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/LessonId"
+      responses:
+        "200":
+          $ref: "#/components/responses/MutationAccepted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/alerts:
+    get:
+      tags: [Admin alerts]
+      summary: List packages awaiting an invoice
+      operationId: listAdminAlerts
+      security:
+        - adminSession: []
+      responses:
+        "200":
+          description: Invoice alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InvoiceAlert"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+components:
+  securitySchemes:
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: piano_admin_session
+      description: Secure, HttpOnly teacher session cookie.
+
+  parameters:
+    StudentToken:
+      name: token
+      in: path
+      required: true
+      description: Unguessable student access token; possession grants access to this student only.
+      schema:
+        type: string
+        minLength: 1
+    StudentId:
+      name: studentId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    LessonId:
+      name: lessonId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    BlackoutId:
+      name: blackoutId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    PackageId:
+      name: packageId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+
+  responses:
+    InvalidToken:
+      description: The student token is not valid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            ok: false
+            error:
+              code: INVALID_TOKEN
+              message: This link isn't valid. Ask your teacher for a new one.
+    Unauthenticated:
+      description: A valid admin session is required.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    MutationAccepted:
+      description: Mutation completed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/MutationSuccess"
+    MutationError:
+      description: The mutation could not be completed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdminErrorResponse"
+
+  schemas:
+    StudentStatus:
+      type: string
+      enum: [active, paused, flagged]
+
+    LessonStatus:
+      type: string
+      enum: [scheduled, done]
+
+    ApiErrorCode:
+      type: string
+      enum:
+        - SLOT_TAKEN
+        - DAY_LOCKED
+        - OUTSIDE_WINDOW
+        - STUDENT_PAUSED
+        - STUDENT_FLAGGED
+        - INVALID_TOKEN
+
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ApiErrorCode"
+        message:
+          type: string
+          minLength: 1
+          description: User-facing wording owned by the server and rendered directly by the frontend.
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          $ref: "#/components/schemas/ApiError"
+
+    AuthErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              const: UNAUTHENTICATED
+            message:
+              type: string
+
+    AdminErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              minLength: 1
+            message:
+              type: string
+              minLength: 1
+
+    MutationSuccess:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    StudentMutationSuccess:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        data:
+          $ref: "#/components/schemas/AdminStudent"
+
+    LessonMutationSuccess:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        data:
+          $ref: "#/components/schemas/Lesson"
+
+    Package:
+      type: object
+      additionalProperties: false
+      required: [size, used, periodNo]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Present in admin responses so the invoice mutation can address the package.
+        size:
+          type: integer
+          enum: [5, 8, 10]
+        used:
+          type: integer
+          minimum: 0
+        periodNo:
+          type: integer
+          minimum: 1
+
+    StudentSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/StudentStatus"
+
+    AdminStudent:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, token, slotDay, slotTime, pkg, invoiceSent]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/StudentStatus"
+        token:
+          type: string
+          description: Personal-link token copied by the teacher UI.
+        slotDay:
+          $ref: "#/components/schemas/Weekday"
+        slotTime:
+          $ref: "#/components/schemas/LocalTime"
+        pkg:
+          $ref: "#/components/schemas/Package"
+        invoiceSent:
+          type: boolean
+
+    StudentView:
+      type: object
+      additionalProperties: false
+      required: [student, package, nextLesson, lessons, canRequestPause]
+      properties:
+        student:
+          $ref: "#/components/schemas/StudentSummary"
+        package:
+          $ref: "#/components/schemas/Package"
+        nextLesson:
+          oneOf:
+            - $ref: "#/components/schemas/StudentLesson"
+            - type: "null"
+        lessons:
+          type: array
+          description: Upcoming lessons sorted by `startsAt`, not by sequence number.
+          items:
+            $ref: "#/components/schemas/StudentLesson"
+        canRequestPause:
+          type: boolean
+
+    Lesson:
+      type: object
+      additionalProperties: false
+      required: [id, seq, studentId, startsAt, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          minimum: 1
+        studentId:
+          type: integer
+          format: int64
+          minimum: 1
+        startsAt:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/LessonStatus"
+
+    StudentLesson:
+      type: object
+      additionalProperties: false
+      required: [id, seq, startsAt, status, canMove]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          minimum: 1
+        startsAt:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/LessonStatus"
+        canMove:
+          type: boolean
+
+    OpenSlot:
+      type: object
+      additionalProperties: false
+      required: [startsAt]
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+
+    Weekday:
+      type: integer
+      minimum: 1
+      maximum: 5
+      description: ISO-like weekday used by the frontend, where 1 is Monday and 5 is Friday.
+
+    LocalTime:
+      type: string
+      pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+      examples: ["16:15"]
+
+    Blackout:
+      type: object
+      additionalProperties: false
+      required: [id, startsAt, note]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        startsAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+
+    Availability:
+      type: object
+      additionalProperties: false
+      required: [hours, blackouts]
+      properties:
+        hours:
+          type: object
+          description: Available grid times keyed by weekday number (`1` through `5`).
+          propertyNames:
+            pattern: "^[1-5]$"
+          additionalProperties:
+            type: array
+            uniqueItems: true
+            items:
+              $ref: "#/components/schemas/LocalTime"
+        blackouts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blackout"
+
+    WeekDay:
+      type: object
+      additionalProperties: false
+      required: [date, locked, cells]
+      properties:
+        date:
+          type: string
+          format: date
+        locked:
+          type: boolean
+        cells:
+          type: array
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/LessonCell"
+              - $ref: "#/components/schemas/BlackoutCell"
+              - $ref: "#/components/schemas/OpenCell"
+            discriminator:
+              propertyName: type
+              mapping:
+                lesson: "#/components/schemas/LessonCell"
+                blackout: "#/components/schemas/BlackoutCell"
+                open: "#/components/schemas/OpenCell"
+
+    LessonCell:
+      type: object
+      additionalProperties: false
+      required: [type, startsAt, lessonId, studentName, seq, size]
+      properties:
+        type:
+          type: string
+          const: lesson
+        startsAt:
+          type: string
+          format: date-time
+        lessonId:
+          type: integer
+          format: int64
+          minimum: 1
+        studentName:
+          type: string
+        seq:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          enum: [5, 8, 10]
+
+    BlackoutCell:
+      type: object
+      additionalProperties: false
+      required: [type, startsAt, note]
+      properties:
+        type:
+          type: string
+          const: blackout
+        startsAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+
+    OpenCell:
+      type: object
+      additionalProperties: false
+      required: [type, startsAt]
+      properties:
+        type:
+          type: string
+          const: open
+        startsAt:
+          type: string
+          format: date-time
+
+    InvoiceAlert:
+      type: object
+      additionalProperties: false
+      required: [student, package]
+      properties:
+        student:
+          $ref: "#/components/schemas/StudentSummary"
+        package:
+          $ref: "#/components/schemas/Package"
