@@ -570,6 +570,64 @@ paths:
         "404":
           $ref: "#/components/responses/MutationError"
 
+  /admin/lessons/{lessonId}/done:
+    post:
+      tags: [Admin calendar]
+      summary: Mark a lesson done
+      description: >
+        Marks a scheduled lesson done and counts it against its package. Works on
+        a lesson that has not started yet, as an explicit teacher override.
+        `LESSON_ALREADY_DONE` if it is done already, `PACKAGE_FULL` if the package
+        has no lessons left to use. Lessons whose time has passed are marked done
+        on their own the next time the studio's data is read.
+      operationId: completeAdminLesson
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/LessonId"
+      responses:
+        "200":
+          description: Lesson marked done
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LessonMutationSuccess"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+        "409":
+          $ref: "#/components/responses/MutationError"
+
+  /admin/lessons/{lessonId}/undo:
+    post:
+      tags: [Admin calendar]
+      summary: Undo a lesson marked done
+      description: >
+        Puts a done lesson back to scheduled and gives its package the lesson
+        back. `LESSON_NOT_DONE` if it is still scheduled, `PACKAGE_EMPTY` if the
+        package counts no used lessons. Undoing a lesson whose time has already
+        passed lets the next read mark it done again; remove it instead to keep
+        it off the package.
+      operationId: uncompleteAdminLesson
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/LessonId"
+      responses:
+        "200":
+          description: Lesson returned to scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LessonMutationSuccess"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/MutationError"
+        "409":
+          $ref: "#/components/responses/MutationError"
+
   /admin/move-requests/{requestId}/approve:
     post:
       tags: [Admin calendar]
