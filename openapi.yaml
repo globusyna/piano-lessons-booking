@@ -16,6 +16,8 @@ servers:
   - url: /
     description: Same origin as the frontend
 tags:
+  - name: Authentication
+    description: Teacher login and bearer token issuance
   - name: Student
     description: Token-authenticated student actions
   - name: Admin calendar
@@ -26,6 +28,44 @@ tags:
     description: Packages awaiting an invoice
 
 paths:
+  /auth/token:
+    post:
+      tags: [Authentication]
+      summary: Exchange the teacher password for a bearer token
+      operationId: loginAdmin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [accessToken, tokenType]
+                properties:
+                  accessToken:
+                    type: string
+                  tokenType:
+                    type: string
+                    const: bearer
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
   /s/{token}:
     get:
       tags: [Student]
@@ -554,10 +594,10 @@ paths:
 components:
   securitySchemes:
     adminSession:
-      type: apiKey
-      in: cookie
-      name: piano_admin_session
-      description: Secure, HttpOnly teacher session cookie.
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Bearer token returned by `POST /auth/token`.
 
   parameters:
     StudentToken:
