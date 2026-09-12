@@ -1,0 +1,21 @@
+[project]
+name = "piano-lessons-backend"
+version = "0.1.0"
+description = "In-memory FastAPI backend for the piano lesson booking app"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "pwdlib[argon2]>=0.3.1",
+    "pyjwt>=2.14.0",
+    "uvicorn>=0.52.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
