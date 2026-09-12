@@ -1,8 +1,8 @@
 # Local development runbook
 
-Run the frontend and backend in separate terminals from the repository root. The frontend is
-currently fixture-backed, so it does not yet send requests to the backend; running both gives you
-the UI and API development environments side by side.
+The repository-level `Makefile` is the main interface for local development. The frontend is
+currently fixture-backed, so it does not yet send requests to the backend; running both services
+still gives you the UI and API development environments side by side.
 
 ## Prerequisites
 
@@ -11,27 +11,53 @@ the UI and API development environments side by side.
 
 ## First-time setup
 
-Install the backend dependencies from the repository root:
+From the repository root, install both backend and frontend dependencies:
 
 ```sh
-uv sync
+make setup
 ```
 
-Install the frontend dependencies:
+`make install` is an alias for the same command. The setup target runs `uv sync` for the backend
+and `npm install` in `frontend/`.
+
+## Run the application
+
+Start both development servers from the repository root:
 
 ```sh
-cd frontend
-npm install
-cd ..
+make run
 ```
 
-## Start the backend
+Stop both servers with `Ctrl+C`.
 
-In the first terminal, from the repository root:
+To run the services separately, use two terminals:
 
 ```sh
-uv run uvicorn backend.main:app --reload
+# Terminal 1
+make backend
+
+# Terminal 2
+make frontend
 ```
+
+The defaults can be overridden with Make variables. For example:
+
+```sh
+make run BACKEND_PORT=8080 FRONTEND_PORT=3000
+```
+
+The available variables and their defaults are:
+
+| Variable | Default |
+| --- | --- |
+| `BACKEND_HOST` | `127.0.0.1` |
+| `BACKEND_PORT` | `8000` |
+| `FRONTEND_HOST` | `localhost` |
+| `FRONTEND_PORT` | `5173` |
+
+Run `make help` to see all Make targets.
+
+## Backend
 
 The backend is available at:
 
@@ -62,43 +88,33 @@ For anything beyond local development, set a private JWT signing secret before s
 
 ```sh
 export PIANO_JWT_SECRET='replace-with-a-long-random-secret'
-uv run uvicorn backend.main:app --reload
+make backend
 ```
 
 The backend uses an in-memory store. Restarting it discards changes and restores the seed data.
 
-## Start the frontend
+## Frontend
 
-In a second terminal, from the repository root:
-
-```sh
-cd frontend
-npm run dev
-```
-
-Open the local URL printed by Vite. It is normally `http://localhost:5173`. Useful seeded pages are:
+With the default Make variables, the frontend is available at `http://localhost:5173`. Useful
+seeded pages are:
 
 - Home: `http://localhost:5173/`
 - Admin calendar: `http://localhost:5173/admin`
 - Students: `http://localhost:5173/admin/students`
 - Student view: `http://localhost:5173/s/anna`
 
-If Vite selects another port, use the URL it prints in the terminal.
-
 ## Checks
 
-Run all backend tests from the repository root:
+Run all automated checks (backend tests, frontend linting, and a frontend production build):
 
 ```sh
-uv run pytest
+make check
 ```
 
-Run frontend linting and a production build:
+Each check is also available separately:
 
 ```sh
-cd frontend
-npm run lint
-npm run build
+make test
+make lint
+make build
 ```
-
-Stop either development server with `Ctrl+C` in its terminal.
