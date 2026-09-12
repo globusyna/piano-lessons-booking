@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { PackageProgress } from "@/components/PackageProgress";
 import { pianoKeys } from "@/hooks/use-piano-store";
 import { api, errorMessage } from "@/lib/api-client";
+import { fmt } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/alerts")({
   component: AlertsPage,
@@ -20,40 +21,75 @@ function AlertsPage() {
   return (
     <div className="max-w-2xl">
       <h1 className="text-2xl">Alerts</h1>
-      <p className="mt-1 text-sm text-slate">Packages finished and waiting on an invoice.</p>
+      <p className="mt-1 text-sm text-slate">Move requests and packages needing attention.</p>
 
       {rows.length === 0 ? (
-        <p className="mt-8 text-slate">Nothing to invoice.</p>
+        <p className="mt-8 text-slate">Nothing needs your attention.</p>
       ) : (
         <ul className="mt-6 divide-y divide-border border-t border-b border-border">
-          {rows.map(({ student, package: pkg }) => (
-            <li key={student.id} className="flex items-center justify-between gap-4 py-4">
+          {rows.map((alert) => (
+            <li
+              key={`${alert.type}-${alert.type === "invoice" ? alert.package.id : alert.moveRequest.id}`}
+              className="flex flex-wrap items-center justify-between gap-4 py-4"
+            >
               <div>
                 <Link
                   to="/admin/students/$id"
-                  params={{ id: String(student.id) }}
+                  params={{ id: String(alert.student.id) }}
                   className="underline-offset-4 hover:underline"
                 >
-                  {student.name}
+                  {alert.student.name}
                 </Link>
-                <p className="tnum text-sm text-slate">Period {pkg.periodNo}</p>
+                {alert.type === "moveRequest" ? (
+                  <>
+                    <p className="mt-1 text-sm">Move request</p>
+                    <p className="tnum text-sm text-slate">
+                      {fmt.dayShort(alert.lesson.startsAt)} {fmt.dateShort(alert.lesson.startsAt)}{" "}
+                      at {fmt.time(alert.lesson.startsAt)} →{" "}
+                      {fmt.dayShort(alert.moveRequest.requestedStartsAt)}{" "}
+                      {fmt.dateShort(alert.moveRequest.requestedStartsAt)} at{" "}
+                      {fmt.time(alert.moveRequest.requestedStartsAt)}
+                    </p>
+                  </>
+                ) : (
+                  <p className="tnum text-sm text-slate">Period {alert.package.periodNo}</p>
+                )}
               </div>
-              <PackageProgress used={pkg.used} size={pkg.size} />
-              <button
-                onClick={async () => {
-                  if (pkg.id === null) return;
-                  try {
-                    await api.markInvoiceSent(pkg.id);
-                    await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
-                    toast("Invoice marked as sent");
-                  } catch (error) {
-                    toast.error(errorMessage(error));
-                  }
-                }}
-                className="bg-felt px-3 py-2 text-sm text-felt-foreground"
-              >
-                Mark invoice sent
-              </button>
+              {alert.type === "moveRequest" ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      await api.approveMoveRequest(alert.moveRequest.id);
+                      await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+                      toast("Move request approved");
+                    } catch (error) {
+                      toast.error(errorMessage(error));
+                    }
+                  }}
+                  className="bg-felt px-3 py-2 text-sm text-felt-foreground"
+                >
+                  Approve move request
+                </button>
+              ) : (
+                <>
+                  <PackageProgress used={alert.package.used} size={alert.package.size} />
+                  <button
+                    onClick={async () => {
+                      if (alert.package.id === null) return;
+                      try {
+                        await api.markInvoiceSent(alert.package.id);
+                        await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+                        toast("Invoice marked as sent");
+                      } catch (error) {
+                        toast.error(errorMessage(error));
+                      }
+                    }}
+                    className="bg-felt px-3 py-2 text-sm text-felt-foreground"
+                  >
+                    Mark invoice sent
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>

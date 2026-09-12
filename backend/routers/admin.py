@@ -136,11 +136,21 @@ def approve_move_request(request_id: int) -> dict:
 
 @router.get("/alerts")
 def list_alerts() -> dict:
-    alerts = [
+    move_alerts = [
         {
+            "type": "moveRequest",
+            "student": {"id": student.id, "name": student.name, "status": student.status},
+            "lesson": lesson,
+            "moveRequest": move_request,
+        }
+        for student, lesson, move_request in store.list_move_requests()
+    ]
+    invoice_alerts = [
+        {
+            "type": "invoice",
             "student": {"id": student.id, "name": student.name, "status": student.status},
             "package": package,
         }
         for student, package in store.list_alerts()
     ]
-    return {"alerts": alerts}
+    return {"alerts": [*move_alerts, *invoice_alerts]}

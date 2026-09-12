@@ -51,6 +51,12 @@ export type StudentView = {
   canRequestPause: boolean;
 };
 
+export type AlertStudent = { id: number; name: string; status: StudentStatus };
+
+export type AdminAlert =
+  | { type: "moveRequest"; student: AlertStudent; lesson: Lesson; moveRequest: LessonMoveRequest }
+  | { type: "invoice"; student: AlertStudent; package: Package };
+
 export type WeekCell =
   | {
       type: "lesson";

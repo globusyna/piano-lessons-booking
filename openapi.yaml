@@ -602,13 +602,13 @@ paths:
   /admin/alerts:
     get:
       tags: [Admin alerts]
-      summary: List packages awaiting an invoice
+      summary: List move requests and packages needing attention
       operationId: listAdminAlerts
       security:
         - adminSession: []
       responses:
         "200":
-          description: Invoice alerts
+          description: Actionable admin alerts
           content:
             application/json:
               schema:
@@ -618,7 +618,14 @@ paths:
                   alerts:
                     type: array
                     items:
-                      $ref: "#/components/schemas/InvoiceAlert"
+                      oneOf:
+                        - $ref: "#/components/schemas/MoveRequestAlert"
+                        - $ref: "#/components/schemas/InvoiceAlert"
+                      discriminator:
+                        propertyName: type
+                        mapping:
+                          moveRequest: "#/components/schemas/MoveRequestAlert"
+                          invoice: "#/components/schemas/InvoiceAlert"
         "401":
           $ref: "#/components/responses/Unauthenticated"
 
@@ -1106,9 +1113,27 @@ components:
     InvoiceAlert:
       type: object
       additionalProperties: false
-      required: [student, package]
+      required: [type, student, package]
       properties:
+        type:
+          type: string
+          const: invoice
         student:
           $ref: "#/components/schemas/StudentSummary"
         package:
           $ref: "#/components/schemas/Package"
+
+    MoveRequestAlert:
+      type: object
+      additionalProperties: false
+      required: [type, student, lesson, moveRequest]
+      properties:
+        type:
+          type: string
+          const: moveRequest
+        student:
+          $ref: "#/components/schemas/StudentSummary"
+        lesson:
+          $ref: "#/components/schemas/Lesson"
+        moveRequest:
+          $ref: "#/components/schemas/LessonMoveRequest"

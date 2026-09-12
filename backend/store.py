@@ -726,6 +726,31 @@ class DatabaseStore:
             )
             session.delete(lesson)
 
+    def list_move_requests(
+        self,
+    ) -> list[tuple[Student, Lesson, LessonMoveRequest]]:
+        with self._sessions() as session:
+            requests = session.scalars(
+                select(LessonMoveRequestRecord).order_by(
+                    LessonMoveRequestRecord.requested_starts_at,
+                    LessonMoveRequestRecord.id,
+                )
+            ).all()
+            result = []
+            for request in requests:
+                lesson = session.get(LessonRecord, request.lesson_id)
+                if lesson is None:
+                    continue
+                student_record = self._student_record(session, lesson.student_id)
+                result.append(
+                    (
+                        self._student_model(session, student_record),
+                        self._lesson_model(lesson),
+                        self._move_request_model(request),
+                    )
+                )
+            return result
+
     def list_alerts(self) -> list[tuple[Student, Package]]:
         with self._sessions() as session:
             packages = session.scalars(

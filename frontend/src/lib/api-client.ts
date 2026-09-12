@@ -1,4 +1,5 @@
 import type {
+  AdminAlert,
   Blackout,
   Lesson,
   LessonMoveRequest,
@@ -167,15 +168,7 @@ export const api = {
       { method: "POST" },
       true,
     ),
-  alerts: async () =>
-    (
-      await request<{
-        alerts: Array<{
-          student: { id: number; name: string; status: StudentStatus };
-          package: Package;
-        }>;
-      }>("/admin/alerts", {}, true)
-    ).alerts,
+  alerts: async () => (await request<{ alerts: AdminAlert[] }>("/admin/alerts", {}, true)).alerts,
 };
 
 function localDate(date: Date) {

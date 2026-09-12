@@ -58,7 +58,7 @@ A slot is **open** if it falls inside an `availability_rule`, is not inside a `b
 2. **Availability** — weekly hours grid + add/remove blackout ranges.
 3. **Students** — list with status, current package, lessons used (`7/10`), personal link to copy.
 4. **Student detail** — set weekly slot, open a package (5 or 10), pause/unpause, flag/unflag, mark invoice sent, full lesson history.
-5. **Inbox / alerts** — students whose package is consumed and awaiting invoice.
+5. **Inbox / alerts** — approve pending lesson move requests and mark consumed packages as invoiced.
 
 ## 4. Student screen (`/s/:token`)
 
