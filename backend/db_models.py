@@ -5,9 +5,11 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -93,13 +95,51 @@ class LessonRecord(Base):
 
 
 class LessonMoveRequestRecord(Base):
+    """One request to move a lesson, kept after it is answered (#10).
+
+    Resolving a request used to delete the row, so "a row exists" and "someone
+    is waiting for an answer" were the same fact. A decline now keeps the row
+    with ``status="declined"`` and an optional ``decline_reason``, so the
+    student is told rather than watching the request vanish, and a request that
+    goes stale on its own ends as ``status="expired"`` the same way.
+
+    That makes the two unique indexes below **partial**, which is the whole
+    trap this change has to avoid. Unscoped, they said "one row per lesson, one
+    row per requested time, ever" -- true and harmless while resolving deleted
+    the row, and a permanent block the moment it does not: a lesson's first
+    decline would own that ``lesson_id`` forever and no later request could
+    reuse it. Scoped to ``status = 'pending'``, a resolved row is inert history.
+
+    ``status`` deliberately carries no index of its own. Every query that
+    filters on it also filters on ``lesson_id`` or sweeps the whole table, and
+    a table this small pays nothing for the scan.
+    """
+
     __tablename__ = "lesson_move_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'declined', 'expired')", name="move_request_status"
+        ),
+        Index(
+            "ix_lesson_move_requests_lesson_id",
+            "lesson_id",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index(
+            "ix_lesson_move_requests_requested_starts_at",
+            "requested_starts_at",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    lesson_id: Mapped[int] = mapped_column(
-        ForeignKey("lessons.id"), unique=True, index=True
-    )
-    requested_starts_at: Mapped[datetime] = mapped_column(UtcDateTime, unique=True, index=True)
+    lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id"))
+    requested_starts_at: Mapped[datetime] = mapped_column(UtcDateTime)
+    status: Mapped[str] = mapped_column(String(20))
+    decline_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
 
 class BlackoutRecord(Base):

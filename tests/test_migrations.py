@@ -33,6 +33,12 @@ from backend.store import DatabaseStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# Two revisions this file names on purpose. A test that pins behaviour to one
+# specific migration has to say which one; "-1" stops meaning it the moment
+# another revision lands on top.
+INITIAL_REVISION = "256042e4926e"
+SIZE_RELAXATION_REVISION = "ac812725de6c"
+
 
 def _schema(engine: Engine) -> set[tuple[str, str, str, str]]:
     """Every table, index and trigger SQLite holds, minus Alembic's bookkeeping."""
@@ -149,24 +155,19 @@ def test_store_adopts_a_database_built_before_migrations_existed(tmp_path) -> No
     """
     url = f"sqlite+pysqlite:///{tmp_path / 'legacy.db'}"
     legacy_engine = create_database_engine(url)
-    # Only the tables the initial revision creates. `Base.metadata` grows with
-    # every revision after it (`student_pauses`, #12), and a database that
-    # already had those would not be a pre-migration one.
-    Base.metadata.create_all(
-        legacy_engine,
-        tables=[
-            Base.metadata.tables[name]
-            for name in (
-                "teacher_settings",
-                "availability_slots",
-                "students",
-                "packages",
-                "lessons",
-                "lesson_move_requests",
-                "blackouts",
-            )
-        ],
-    )
+    # The schema as it stood when `create_all` was how this database got built,
+    # which is the initial revision's -- built by running that revision and then
+    # throwing away the version table it wrote, so the database looks exactly
+    # like one made before Alembic existed.
+    #
+    # `Base.metadata.create_all` cannot stand in for it. `Base.metadata` is
+    # today's schema and keeps moving: it grew `student_pauses` (#12) and then
+    # `lesson_move_requests.status` (#10), so create_all would produce a
+    # database that already has changes the migrations are about to apply.
+    with legacy_engine.begin() as connection:
+        command.upgrade(alembic_config(connection), INITIAL_REVISION)
+    with legacy_engine.begin() as connection:
+        connection.execute(text(f"DROP TABLE {VERSION_TABLE}"))
     with create_session_factory(legacy_engine).begin() as session:
         session.add(
             TeacherSettingsRecord(
@@ -222,6 +223,11 @@ def test_downgrading_refuses_to_shrink_a_package_that_was_topped_up(tmp_path) ->
         session.flush()
         session.add(PackageRecord(student_id=1, size=20, used=4, period_no=1, invoice_sent=False))
 
+    # Step back to the size relaxation first, so "-1" below is that revision
+    # itself however many revisions land on top of it later (#10 added one).
+    with engine.begin() as connection:
+        command.downgrade(alembic_config(connection), SIZE_RELAXATION_REVISION)
+
     with pytest.raises(RuntimeError, match="size IN"):
         with engine.begin() as connection:
             command.downgrade(alembic_config(connection), "-1")
@@ -230,7 +236,7 @@ def test_downgrading_refuses_to_shrink_a_package_that_was_topped_up(tmp_path) ->
         packages = connection.execute(text("SELECT size, used FROM packages")).all()
         revision = current_revision(connection)
     assert packages == [(20, 4)]
-    assert revision == head_revision()
+    assert revision == SIZE_RELAXATION_REVISION
     assert _table_names(engine) == {table.name for table in Base.metadata.sorted_tables}
     engine.dispose()
 
