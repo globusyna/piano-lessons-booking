@@ -29,6 +29,13 @@ export class ApiClientError extends Error {
 
 type ErrorBody = { error?: { code?: string; message?: string } };
 
+// The dates a generating call would put on the calendar, worked out by the very
+// backend function that call uses and written by neither. So what a confirm
+// dialog lists is what confirming creates, rolled past blackouts and taken times
+// and all. A slot that cannot be placed at all comes back as an error --
+// WEEKLY_SLOT_NOT_AVAILABLE, NO_OPEN_SLOT_FOUND -- rather than a short list.
+export type PackagePreview = { size: number; dates: string[] };
+
 export function getAdminToken() {
   return typeof window === "undefined" ? null : sessionStorage.getItem(ADMIN_TOKEN_KEY);
 }
@@ -165,6 +172,23 @@ export const api = {
     ),
   markInvoiceSent: (packageId: number) =>
     request<{ ok: true }>(`/admin/packages/${packageId}/invoiced`, { method: "POST" }, true),
+  // Look, don't touch. A GET, because it creates nothing.
+  packagePreview: async (id: number, size: number) =>
+    (
+      await request<{ preview: PackagePreview }>(
+        `/admin/students/${id}/package/preview?size=${size}`,
+        {},
+        true,
+      )
+    ).preview,
+  renewalPreview: async (id: number, size: number) =>
+    (
+      await request<{ preview: PackagePreview }>(
+        `/admin/students/${id}/package/renew/preview?size=${size}`,
+        {},
+        true,
+      )
+    ).preview,
   openPackage: (id: number, size: number) =>
     request<{ ok: true }>(
       `/admin/students/${id}/package`,

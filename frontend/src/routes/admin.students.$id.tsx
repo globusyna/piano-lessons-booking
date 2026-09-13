@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
@@ -16,7 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { pianoKeys, useStudent } from "@/hooks/use-piano-store";
-import { api, errorMessage } from "@/lib/api-client";
+import { api, errorMessage, type PackagePreview } from "@/lib/api-client";
 import { PAUSE_WEEKS, ROW_TIMES, fmt, pauseReturnKey } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/students/$id")({
@@ -35,6 +35,29 @@ const DAYS = [
   [5, "Friday"],
 ] as const;
 
+/** The dates a confirm would create, or the reason there are none to show. */
+function PlannedDates({ preview }: { preview: UseQueryResult<PackagePreview> }) {
+  if (preview.isError)
+    return <p className="mt-4 text-sm text-felt">{errorMessage(preview.error)}</p>;
+  if (!preview.data) return <p className="mt-4 text-sm text-slate">Working out the dates…</p>;
+  return (
+    <ol className="mt-4 max-h-56 overflow-y-auto border border-border">
+      {preview.data.dates.map((date, index) => (
+        <li
+          key={date}
+          className="flex items-baseline gap-3 border-b border-border px-3 py-1.5 text-sm last:border-b-0"
+        >
+          <span className="tnum w-5 text-slate">{index + 1}</span>
+          <span className="flex-1">
+            {fmt.dayShort(date)} {fmt.date(date)}
+          </span>
+          <span className="tnum text-slate">{fmt.time(date)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 function StudentDetail() {
   const { id } = Route.useParams();
   const studentId = Number(id);
@@ -46,6 +69,24 @@ function StudentDetail() {
   const [confirmRenew, setConfirmRenew] = useState(false);
   const [confirmPause, setConfirmPause] = useState(false);
   const [pauseWeeks, setPauseWeeks] = useState(1);
+
+  // What the two confirm dialogs show. Asked for only while a dialog is open,
+  // and answered by the endpoint that runs the real placement and writes
+  // nothing -- so the dates below are the dates confirming creates, blackout
+  // skips included, and a slot that cannot be placed says so here rather than
+  // after the fact.
+  const packagePreview = useQuery({
+    queryKey: [...pianoKeys.student(studentId), "package-preview", packageSize],
+    queryFn: () => api.packagePreview(studentId, packageSize),
+    enabled: confirmPackage,
+    retry: false,
+  });
+  const renewPreview = useQuery({
+    queryKey: [...pianoKeys.student(studentId), "renew-preview", renewSize],
+    queryFn: () => api.renewalPreview(studentId, renewSize),
+    enabled: confirmRenew,
+    retry: false,
+  });
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: pianoKeys.all });
 
@@ -350,14 +391,24 @@ function StudentDetail() {
           <AlertDialogHeader>
             <AlertDialogTitle>Top up this package?</AlertDialogTitle>
             <AlertDialogDescription>
-              {renewSize} more lessons go on {student.name}'s weekly slot, carrying on from the last
-              one already booked. The package becomes {student.pkg.size + renewSize} lessons in
-              total, and nothing already scheduled moves.
+              {renewPreview.isError ? (
+                <>
+                  These {renewSize} lessons cannot go on {student.name}'s weekly slot.
+                </>
+              ) : (
+                <>
+                  {renewSize} more lessons, carrying on from the last one already booked. The
+                  package becomes {student.pkg.size + renewSize} lessons in total, nothing already
+                  scheduled moves, and nothing is created until you confirm.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <PlannedDates preview={renewPreview} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={!renewPreview.data}
               onClick={async (e) => {
                 e.preventDefault();
                 // Read the total before the refetch replaces it.
@@ -383,12 +434,23 @@ function StudentDetail() {
           <AlertDialogHeader>
             <AlertDialogTitle>Open a new package?</AlertDialogTitle>
             <AlertDialogDescription>
-              {packageSize} lessons are placed on {student.name}'s weekly slot, starting next week.
+              {packagePreview.isError ? (
+                <>
+                  These {packageSize} lessons cannot go on {student.name}'s weekly slot.
+                </>
+              ) : (
+                <>
+                  The dates {student.name} gets, rolled past anything blacked out or already taken.
+                  Nothing is created until you confirm.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <PlannedDates preview={packagePreview} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={!packagePreview.data}
               onClick={async (e) => {
                 e.preventDefault();
                 try {
