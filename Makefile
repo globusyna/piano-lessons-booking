@@ -27,7 +27,7 @@ run: ## Run the backend and frontend development servers
 	wait "$$backend_pid" "$$frontend_pid"
 
 backend: ## Run the backend development server
-	uv run uvicorn backend.main:app --reload --host $(BACKEND_HOST) --port $(BACKEND_PORT)
+	PIANO_DEV_MODE=1 uv run uvicorn backend.main:app --reload --host $(BACKEND_HOST) --port $(BACKEND_PORT)
 
 frontend: ## Run the frontend development server
 	VITE_API_BASE_URL=$(API_BASE_URL) npm --prefix frontend run dev -- --host $(FRONTEND_HOST) --port $(FRONTEND_PORT)
