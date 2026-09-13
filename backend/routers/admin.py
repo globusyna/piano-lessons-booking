@@ -7,6 +7,7 @@ from ..models import (
     AvailabilityRequest,
     BlackoutRequest,
     PackageRequest,
+    PauseRequest,
     StatusRequest,
     StudentCreate,
     StudentSlotRequest,
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(requir
 
 @router.get("/api/week")
 def get_week(start: date) -> dict:
-    store.complete_due_lessons()
+    store.catch_up()
     if start.weekday() != 0:
         raise StoreError(400, "INVALID_WEEK", "The requested week must start on Monday.")
     days = []
@@ -83,7 +84,7 @@ def remove_blackout(blackout_id: int) -> dict:
 
 @router.get("/students")
 def list_students() -> dict:
-    store.complete_due_lessons()
+    store.catch_up()
     return {"students": store.list_students()}
 
 
@@ -97,7 +98,7 @@ def create_student(body: StudentCreate) -> dict:
 
 @router.get("/students/{student_id}")
 def get_student(student_id: int) -> dict:
-    store.complete_due_lessons()
+    store.catch_up()
     return {"student": store.student(student_id), "lessons": store.lesson_history(student_id)}
 
 
@@ -111,6 +112,16 @@ def set_student_slot(student_id: int, body: StudentSlotRequest) -> dict:
 def open_student_package(student_id: int, body: PackageRequest) -> dict:
     store.open_package(student_id, body.size)
     return {"ok": True}
+
+
+@router.post("/students/{student_id}/pause")
+def pause_student(student_id: int, body: PauseRequest) -> dict:
+    return {"ok": True, "data": store.pause_student(student_id, body.weeks)}
+
+
+@router.post("/students/{student_id}/resume")
+def resume_student(student_id: int) -> dict:
+    return {"ok": True, "data": store.resume_student(student_id)}
 
 
 @router.post("/students/{student_id}/status")
@@ -149,7 +160,7 @@ def approve_move_request(request_id: int) -> dict:
 
 @router.get("/alerts")
 def list_alerts() -> dict:
-    store.complete_due_lessons()
+    store.catch_up()
     move_alerts = [
         {
             "type": "moveRequest",

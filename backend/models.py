@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
@@ -40,6 +40,7 @@ class Student(ApiModel):
     slot_time: LocalTime = Field(alias="slotTime")
     pkg: Package
     invoice_sent: bool = Field(alias="invoiceSent")
+    paused_until: date | None = Field(default=None, alias="pausedUntil")
 
 
 class StudentSummary(ApiModel):
@@ -77,6 +78,7 @@ class StudentView(ApiModel):
     next_lesson: StudentLesson | None = Field(alias="nextLesson")
     lessons: list[StudentLesson]
     can_request_pause: bool = Field(alias="canRequestPause")
+    paused_until: date | None = Field(default=None, alias="pausedUntil")
 
 
 class Blackout(ApiModel):
@@ -134,6 +136,18 @@ class PackageRequest(ApiModel):
 
 class StatusRequest(ApiModel):
     status: StudentStatus
+
+
+class PauseRequest(ApiModel):
+    """A break of 1-6 weeks.
+
+    `weeks` is deliberately untyped here. The store checks it and raises the one
+    named error the API promises, `INVALID_PAUSE_LENGTH`, so that 0, -2, 7 and
+    "three" all answer the same way instead of splitting into a range error and
+    a type error.
+    """
+
+    weeks: Any
 
 
 class LoginRequest(ApiModel):

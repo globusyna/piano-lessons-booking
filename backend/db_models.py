@@ -1,6 +1,14 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base, UtcDateTime
@@ -86,3 +94,28 @@ class BlackoutRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     starts_at: Mapped[datetime] = mapped_column(UtcDateTime, unique=True, index=True)
     note: Mapped[str] = mapped_column(String(500))
+
+
+class StudentPauseRecord(Base):
+    """One break a student took, stored as the dates it covers.
+
+    `weeks` is kept for the record and for display, but nothing is computed from
+    it at read time: `starts_on` and `ends_on` are what the store queries, so a
+    pause can be asserted on and shown without re-deriving it from a duration.
+    The break covers `[starts_on, ends_on)` -- on `ends_on` the student is back.
+
+    `ended_early_at` is what separates the two ways a pause can end: null means
+    it ran its course and expired on `ends_on`, a timestamp means the teacher or
+    the student ended it before that.
+    """
+
+    __tablename__ = "student_pauses"
+    __table_args__ = (CheckConstraint("weeks >= 1 AND weeks <= 6", name="pause_weeks_range"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
+    weeks: Mapped[int] = mapped_column(Integer)
+    starts_on: Mapped[date] = mapped_column(Date)
+    ends_on: Mapped[date] = mapped_column(Date, index=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime)
+    ended_early_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)

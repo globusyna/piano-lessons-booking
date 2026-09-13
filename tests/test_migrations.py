@@ -148,7 +148,24 @@ def test_store_adopts_a_database_built_before_migrations_existed(tmp_path) -> No
     """
     url = f"sqlite+pysqlite:///{tmp_path / 'legacy.db'}"
     legacy_engine = create_database_engine(url)
-    Base.metadata.create_all(legacy_engine)
+    # Only the tables the initial revision creates. `Base.metadata` grows with
+    # every revision after it (`student_pauses`, #12), and a database that
+    # already had those would not be a pre-migration one.
+    Base.metadata.create_all(
+        legacy_engine,
+        tables=[
+            Base.metadata.tables[name]
+            for name in (
+                "teacher_settings",
+                "availability_slots",
+                "students",
+                "packages",
+                "lessons",
+                "lesson_move_requests",
+                "blackouts",
+            )
+        ],
+    )
     with create_session_factory(legacy_engine).begin() as session:
         session.add(
             TeacherSettingsRecord(
