@@ -171,6 +171,14 @@ export const api = {
       { method: "POST", body: json({ size }) },
       true,
     ),
+  // Tops the current package up rather than starting a new one: the lessons
+  // already booked keep their dates and `size` goes up by this much.
+  renewPackage: (id: number, size: number) =>
+    request<{ ok: true }>(
+      `/admin/students/${id}/package/renew`,
+      { method: "POST", body: json({ size }) },
+      true,
+    ),
   removeLesson: (id: number) =>
     request<{ ok: true }>(`/admin/lessons/${id}`, { method: "DELETE" }, true),
   approveMoveRequest: (id: number) =>
