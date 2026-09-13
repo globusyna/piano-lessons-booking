@@ -260,3 +260,60 @@ def test_migrate_target_upgrades_the_configured_database(tmp_path) -> None:
     assert revision == head_revision()
     assert _table_names(engine) == {table.name for table in Base.metadata.sorted_tables}
     engine.dispose()
+
+
+def test_existing_move_requests_become_pending_when_status_arrives(tmp_path) -> None:
+    """A request that predates the status column is a pending one.
+
+    Before #10 the table held nothing else: resolving a request deleted it, so
+    every surviving row was one still waiting for an answer. The revision has to
+    write that fact down rather than leave `status` to chance, or every request
+    in flight when it runs would come back as something the CHECK constraint
+    rejects -- or, worse, as already resolved and quietly unblocked.
+
+    Built by upgrading to the revision *before* the change and inserting through
+    raw SQL, because `db_models.py` has no way left to spell a row without a
+    status.
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'in-flight.db'}"
+    engine = create_database_engine(url)
+    with engine.begin() as connection:
+        command.upgrade(alembic_config(connection), SIZE_RELAXATION_REVISION)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO students (id, name, status, token, slot_day, slot_time) "
+                "VALUES (1, 'In Flight', 'active', 'in-flight', 2, '16:15')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO packages (id, student_id, size, used, period_no, invoice_sent) "
+                "VALUES (1, 1, 10, 0, 1, 0)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lessons (id, student_id, package_id, seq, starts_at, status) "
+                "VALUES (1, 1, 1, 1, '2030-01-07 15:15:00', 'scheduled')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lesson_move_requests (id, lesson_id, requested_starts_at) "
+                "VALUES (1, 1, '2030-01-09 15:15:00')"
+            )
+        )
+
+    upgrade_to_head(engine)
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT lesson_id, status, decline_reason, resolved_at FROM lesson_move_requests"
+            )
+        ).one()
+        revision = current_revision(connection)
+    assert row == (1, "pending", None, None)
+    assert revision == head_revision()
+    engine.dispose()
