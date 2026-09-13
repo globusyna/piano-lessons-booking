@@ -6,6 +6,7 @@ from ..auth import require_admin
 from ..models import (
     AvailabilityRequest,
     BlackoutRequest,
+    DeclineMoveRequestBody,
     PackageRequest,
     PauseRequest,
     StatusRequest,
@@ -165,8 +166,27 @@ def uncomplete_lesson(lesson_id: int) -> dict:
 
 @router.post("/move-requests/{request_id}/approve")
 def approve_move_request(request_id: int) -> dict:
+    # Settle the clock first, like every other handler that turns on a lesson's
+    # current status. This one never did, which is how approving could still
+    # move a lesson whose time had already passed simply because nothing had
+    # read this studio's data since it started.
+    store.catch_up()
     lesson = store.approve_lesson_move(request_id)
     return {"ok": True, "data": lesson}
+
+
+@router.post("/move-requests/{request_id}/decline")
+def decline_move_request(request_id: int, body: DeclineMoveRequestBody | None = None) -> dict:
+    """Turn a move request down, with an optional reason for the student.
+
+    The body is optional all the way down: no body, `{}` and `{"reason": null}`
+    all mean "no reason given". The request itself comes back rather than a bare
+    `{"ok": true}`, so the caller can show the declined state straight away
+    without a second round trip to find out what it now says.
+    """
+    store.catch_up()
+    reason = body.reason_or_none() if body is not None else None
+    return {"ok": True, "data": store.decline_lesson_move(request_id, reason)}
 
 
 @router.get("/alerts")
