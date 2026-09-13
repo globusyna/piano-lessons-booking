@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { toast } from "sonner";
 import { PackageProgress } from "@/components/PackageProgress";
 import { pianoKeys } from "@/hooks/use-piano-store";
@@ -9,6 +10,80 @@ import { fmt } from "@/lib/piano-data";
 export const Route = createFileRoute("/admin/alerts")({
   component: AlertsPage,
 });
+
+// The price list, same as on student detail: a package's total is unconstrained
+// but what can be bought in one go is still one of these.
+const PACKAGE_SIZES = [5, 8, 10] as const;
+
+/** The two things a finished package can have done to it, on the row that flagged it.
+ *
+ * Its own component so each row keeps its own chosen size, and so a package can
+ * be topped up straight from the alert instead of going to student detail first.
+ */
+function InvoiceAlertActions({
+  studentId,
+  packageId,
+  used,
+  size,
+}: {
+  studentId: number;
+  packageId: number | null;
+  used: number;
+  size: number;
+}) {
+  const queryClient = useQueryClient();
+  const [renewSize, setRenewSize] = useState<number>(10);
+  const refresh = () => queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <PackageProgress used={used} size={size} />
+      <select
+        value={renewSize}
+        onChange={(e) => setRenewSize(Number(e.target.value))}
+        aria-label="Lessons to add"
+        className="tnum border border-input bg-transparent px-2 py-1.5 text-sm outline-none focus:border-felt"
+      >
+        {PACKAGE_SIZES.map((n) => (
+          <option key={n} value={n}>
+            {n} lessons
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={async () => {
+          const total = size + renewSize;
+          try {
+            await api.renewPackage(studentId, renewSize);
+            await refresh();
+            toast(`Added ${renewSize} lessons — now ${total} total`);
+          } catch (error) {
+            toast.error(errorMessage(error));
+          }
+        }}
+        className="border border-border px-3 py-2 text-sm hover:border-felt hover:text-felt"
+      >
+        Top up
+      </button>
+      <button
+        disabled={packageId === null}
+        onClick={async () => {
+          if (packageId === null) return;
+          try {
+            await api.markInvoiceSent(packageId);
+            await refresh();
+            toast("Invoice marked as sent");
+          } catch (error) {
+            toast.error(errorMessage(error));
+          }
+        }}
+        className="bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-40"
+      >
+        Mark invoice sent
+      </button>
+    </div>
+  );
+}
 
 function AlertsPage() {
   const alerts = useQuery({ queryKey: pianoKeys.alerts(), queryFn: api.alerts });
@@ -71,24 +146,12 @@ function AlertsPage() {
                   Approve move request
                 </button>
               ) : (
-                <>
-                  <PackageProgress used={alert.package.used} size={alert.package.size} />
-                  <button
-                    onClick={async () => {
-                      if (alert.package.id === null) return;
-                      try {
-                        await api.markInvoiceSent(alert.package.id);
-                        await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
-                        toast("Invoice marked as sent");
-                      } catch (error) {
-                        toast.error(errorMessage(error));
-                      }
-                    }}
-                    className="bg-felt px-3 py-2 text-sm text-felt-foreground"
-                  >
-                    Mark invoice sent
-                  </button>
-                </>
+                <InvoiceAlertActions
+                  studentId={alert.student.id}
+                  packageId={alert.package.id}
+                  used={alert.package.used}
+                  size={alert.package.size}
+                />
               )}
             </li>
           ))}

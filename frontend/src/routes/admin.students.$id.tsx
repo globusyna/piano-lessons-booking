@@ -23,6 +23,10 @@ export const Route = createFileRoute("/admin/students/$id")({
   component: StudentDetail,
 });
 
+// The price list. What a package can grow to is unconstrained -- topping a 10
+// up by 10 makes a 20 -- but what can be bought in one go is still one of these.
+const PACKAGE_SIZES = [5, 8, 10] as const;
+
 const DAYS = [
   [1, "Monday"],
   [2, "Tuesday"],
@@ -38,6 +42,8 @@ function StudentDetail() {
   const queryClient = useQueryClient();
   const [packageSize, setPackageSize] = useState(10);
   const [confirmPackage, setConfirmPackage] = useState(false);
+  const [renewSize, setRenewSize] = useState(10);
+  const [confirmRenew, setConfirmRenew] = useState(false);
   const [confirmPause, setConfirmPause] = useState(false);
   const [pauseWeeks, setPauseWeeks] = useState(1);
 
@@ -236,6 +242,33 @@ function StudentDetail() {
         </section>
 
         <section>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-slate">Renew package</h2>
+          <p className="mt-2 text-sm text-slate">
+            Adds to the package already running. Everything booked keeps its date and the new
+            lessons carry on from the last of them.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <select
+              value={renewSize}
+              onChange={(e) => setRenewSize(Number(e.target.value))}
+              className="tnum border border-input bg-transparent px-2 py-1.5 text-sm outline-none focus:border-felt"
+            >
+              {PACKAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n} lessons
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setConfirmRenew(true)}
+              className="border border-border px-3 py-2 text-sm hover:border-felt hover:text-felt"
+            >
+              Top up
+            </button>
+          </div>
+        </section>
+
+        <section>
           <h2 className="text-sm font-bold uppercase tracking-wide text-slate">New package</h2>
           <div className="mt-3 flex gap-2">
             <select
@@ -243,7 +276,7 @@ function StudentDetail() {
               onChange={(e) => setPackageSize(Number(e.target.value))}
               className="tnum border border-input bg-transparent px-2 py-1.5 text-sm outline-none focus:border-felt"
             >
-              {[5, 8, 10].map((n) => (
+              {PACKAGE_SIZES.map((n) => (
                 <option key={n} value={n}>
                   {n} lessons
                 </option>
@@ -307,6 +340,39 @@ function StudentDetail() {
               }}
             >
               Pause
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmRenew} onOpenChange={setConfirmRenew}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Top up this package?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {renewSize} more lessons go on {student.name}'s weekly slot, carrying on from the last
+              one already booked. The package becomes {student.pkg.size + renewSize} lessons in
+              total, and nothing already scheduled moves.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async (e) => {
+                e.preventDefault();
+                // Read the total before the refetch replaces it.
+                const total = student.pkg.size + renewSize;
+                try {
+                  await api.renewPackage(student.id, renewSize);
+                  await refresh();
+                  setConfirmRenew(false);
+                  toast(`Added ${renewSize} lessons — now ${total} total`);
+                } catch (error) {
+                  toast.error(errorMessage(error));
+                }
+              }}
+            >
+              Top up
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

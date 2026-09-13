@@ -48,9 +48,23 @@ class StudentRecord(Base):
 
 
 class PackageRecord(Base):
+    """One package of lessons sold to a student.
+
+    ``size`` is the number of lessons the package holds in total, not one of the
+    three sizes on the price list. Renewing a package tops it up in place (#13),
+    so a 10 that was renewed by 10 is a 20, and 5 + 8 + 5 is an 18 -- which is
+    why the constraint is ``>= 1`` rather than the old ``IN (5, 8, 10)``. What
+    is *purchasable* is still 5, 8 or 10; that lives in ``PackageRequest``.
+
+    The trade-off, stated plainly: this keeps no record of what was sold when. A
+    ``size`` of 20 is indistinguishable from 10 + 10 and from 8 + 8 + 4. An
+    audit table was considered and rejected as too much schema for now; it can
+    be added later without changing the API.
+    """
+
     __tablename__ = "packages"
     __table_args__ = (
-        CheckConstraint("size IN (5, 8, 10)", name="valid_size"),
+        CheckConstraint("size >= 1", name="valid_size"),
         CheckConstraint("used >= 0 AND used <= size", name="used_range"),
         UniqueConstraint("student_id", "period_no"),
     )
