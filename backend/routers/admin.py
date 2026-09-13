@@ -1,5 +1,4 @@
 from datetime import date, timedelta
-from typing import Literal
 
 from fastapi import APIRouter, Depends
 
@@ -10,6 +9,7 @@ from ..models import (
     DeclineMoveRequestBody,
     PackageRequest,
     PauseRequest,
+    PurchasableSize,
     StatusRequest,
     StudentCreate,
     StudentSlotRequest,
@@ -18,11 +18,6 @@ from ..store import ROW_TIMES, StoreError, store
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_admin)])
-
-# The price list, for the preview endpoints' query parameter. Kept identical to
-# `PackageRequest.size` on purpose: a preview of a size that cannot be bought
-# would be a preview of nothing.
-PurchasableSize = Literal[5, 8, 10]
 
 
 @router.get("/api/week")

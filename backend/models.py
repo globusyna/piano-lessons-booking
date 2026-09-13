@@ -2,7 +2,14 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 
 class ApiModel(BaseModel):
@@ -193,6 +200,16 @@ class PackageRequest(ApiModel):
     """
 
     size: Literal[5, 8, 10]
+
+
+# The same price list, spelled for a query parameter. A JSON body carries a
+# number, so `PackageRequest.size` above can hold the literal straight; a query
+# string carries text, so this one is read as an integer first and then held to
+# exactly the same three values. Two spellings, one price list -- previewing a
+# size that cannot be bought would be previewing nothing. The coercion is
+# deliberately not applied to the body model, which would start accepting
+# `{"size": "5"}` for no reason.
+PurchasableSize = Annotated[Literal[5, 8, 10], BeforeValidator(int)]
 
 
 class PackagePreview(ApiModel):
