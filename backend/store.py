@@ -32,6 +32,7 @@ from .models import (
     LessonStatus,
     MoveRequestStatus,
     Package,
+    PackagePreview,
     Student,
     StudentStatus,
 )
@@ -39,6 +40,33 @@ from .models import (
 
 STUDIO_TZ = ZoneInfo("Europe/Oslo")
 ROW_TIMES = ["14:00", "14:45", "15:30", "16:15", "17:00", "17:45", "18:30"]
+
+# Spelled out rather than derived from `calendar.day_name`, which follows the
+# process locale, and covering 6 and 7 so widening the week (#18) needs no edit
+# here.
+WEEKDAY_NAMES = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+}
+
+# How far a *single* lesson's placement may search forward when its weekly slot
+# is blocked, in weeks, counting the lesson's own candidate week as the first
+# (#11). Running off the end of it fails the whole generating call with
+# `NO_OPEN_SLOT_FOUND`.
+#
+# A year, for two reasons. It is far longer than any real run of blackouts -- the
+# longest thing a studio blacks out is a summer, ten weeks or so -- so the bound
+# never fires on data a teacher would recognise as ordinary. And it is the point
+# where "this slot is busy for a while" stops being a plausible reading: a weekly
+# slot that is blocked every single one of fifty-two consecutive weeks is a slot
+# the teacher has effectively given up, and the useful answer is to say so rather
+# than to book a beginner's fifth lesson in 2029.
+PLACEMENT_SEARCH_WEEKS = 52
 
 
 class StudioClock:
@@ -464,6 +492,56 @@ class DatabaseStore:
             and today <= local.date() <= today + timedelta(days=21)
         )
 
+    def _blocked_instants(
+        self,
+        session: Session,
+        *,
+        exclude_lesson_id: int | None = None,
+        exclude_move_request_id: int | None = None,
+    ) -> set[datetime]:
+        """Every studio instant that is not free to put a lesson on.
+
+        The single definition of "taken" in this store (#11). An instant is
+        blocked when a blackout covers it, when a `lessons` row sits on it, or
+        when a *pending* move request is holding it. Both readers come through
+        here -- the student-facing open-slot grid and package generation -- so
+        the grid cannot offer a time generation would refuse, and generation
+        cannot hand out a time the grid considers spoken for.
+
+        Any lesson status counts, not only `scheduled`. `lessons.starts_at` is
+        unique across the whole studio, so a lesson already marked done still
+        owns its instant: writing over it is an `IntegrityError`, not a double
+        booking to be untangled afterwards.
+
+        Only a *pending* move request counts. A declined or expired row keeps
+        its `requested_starts_at` forever (#10), and reading that as taken would
+        retire the time from the calendar for good.
+
+        The two excludes belong to a lesson being rescheduled: its own row and
+        its own pending request must not block the move they are the subject of.
+        Generation passes neither -- it is placing new lessons and has nothing of
+        its own to step over.
+        """
+        lesson_query = select(LessonRecord)
+        if exclude_lesson_id is not None:
+            lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
+        blocked = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
+        move_request_query = select(LessonMoveRequestRecord).where(
+            LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value
+        )
+        if exclude_move_request_id is not None:
+            move_request_query = move_request_query.where(
+                LessonMoveRequestRecord.id != exclude_move_request_id
+            )
+        blocked.update(
+            self._studio(record.requested_starts_at)
+            for record in session.scalars(move_request_query)
+        )
+        blocked.update(
+            self._studio(record.starts_at) for record in session.scalars(select(BlackoutRecord))
+        )
+        return blocked
+
     def _open_slots(
         self,
         session: Session,
@@ -480,29 +558,14 @@ class DatabaseStore:
         first, last = max(from_date, today), min(to_date, today + timedelta(days=21))
         if first > last:
             return []
-        lesson_query = select(LessonRecord).where(
-            LessonRecord.status == LessonStatus.SCHEDULED.value
+        # What counts as taken lives in `_blocked_instants`, not here, so this
+        # grid and package generation cannot drift into two definitions of
+        # "open" (#11).
+        blocked = self._blocked_instants(
+            session,
+            exclude_lesson_id=exclude_lesson_id,
+            exclude_move_request_id=exclude_move_request_id,
         )
-        if exclude_lesson_id is not None:
-            lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
-        taken = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
-        # Only a *pending* request holds a slot. A declined or expired row keeps
-        # its `requested_starts_at` forever, and reading that as taken would
-        # retire the time from the calendar for good.
-        move_request_query = select(LessonMoveRequestRecord).where(
-            LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value
-        )
-        if exclude_move_request_id is not None:
-            move_request_query = move_request_query.where(
-                LessonMoveRequestRecord.id != exclude_move_request_id
-            )
-        taken.update(
-            self._studio(record.requested_starts_at)
-            for record in session.scalars(move_request_query)
-        )
-        blocked = {
-            self._studio(record.starts_at) for record in session.scalars(select(BlackoutRecord))
-        }
         availability: dict[int, list[str]] = {day: [] for day in range(1, 6)}
         availability_records = session.scalars(
             select(AvailabilitySlotRecord).order_by(
@@ -516,11 +579,7 @@ class DatabaseStore:
         while current <= last:
             for slot_time in availability.get(current.isoweekday(), []):
                 candidate = self._at(current, slot_time)
-                if (
-                    candidate not in taken
-                    and candidate not in blocked
-                    and self.in_move_window(candidate)
-                ):
+                if candidate not in blocked and self.in_move_window(candidate):
                     slots.append(candidate)
             current += timedelta(days=1)
         return sorted(slots)
@@ -1036,39 +1095,120 @@ class DatabaseStore:
         monday = self._monday(datetime.now(STUDIO_TZ).date()) + timedelta(weeks=1)
         return monday + timedelta(days=student.slot_day - 1)
 
+    def _weekly_lesson_dates(
+        self,
+        session: Session,
+        student: StudentRecord,
+        *,
+        count: int,
+        first_seq: int,
+        first_date: date,
+    ) -> list[datetime]:
+        """`count` open instants on the student's weekly slot, one per week.
+
+        The only place in this store where a weekly slot and a lesson count
+        become dates (#11). Opening a package and topping one up both come
+        through here, so neither can grow its own idea of where lessons land --
+        and because it returns dates instead of writing them, a preview can run
+        the real thing and create nothing.
+
+        `first_date` is the caller's anchor -- next week's slot for a fresh
+        package, the week after the last existing lesson for a top-up -- and is
+        only ever a *candidate*. Nothing below trusts a nominal date:
+
+        - The slot has to be in the availability grid at all. If it is not, the
+          call is refused with `WEEKLY_SLOT_NOT_AVAILABLE` before a single date
+          is computed, never mind written. Availability is a (weekday, time)
+          pair, so one check settles every week of the series.
+        - A blocked candidate rolls forward a week at a time until it is not
+          blocked, for that one lesson. `_blocked_instants` is what decides,
+          the same way it decides for the student's booking grid. The first
+          lesson of a series is treated exactly like the tenth; there is no
+          "only later lessons move" case.
+        - Lesson *n*'s candidate is lesson *n-1*'s **placed** date plus a week,
+          not its nominal one. So one skip carries the whole tail of the series
+          with it, in step, and the student still gets exactly `count` lessons.
+        - The per-lesson roll-forward is bounded by `PLACEMENT_SEARCH_WEEKS`.
+          Past it the call fails with `NO_OPEN_SLOT_FOUND`, naming the student
+          and the `seq` that could not be placed. Since nothing is written until
+          the whole list is back in the caller's hands, that failure leaves no
+          package and no lessons behind.
+        """
+        in_grid = session.scalar(
+            select(func.count())
+            .select_from(AvailabilitySlotRecord)
+            .where(
+                AvailabilitySlotRecord.weekday == student.slot_day,
+                AvailabilitySlotRecord.local_time == student.slot_time,
+            )
+        )
+        if not in_grid:
+            day = WEEKDAY_NAMES.get(student.slot_day, f"weekday {student.slot_day}")
+            raise StoreError(
+                409,
+                "WEEKLY_SLOT_NOT_AVAILABLE",
+                f"{student.name}'s weekly slot, {day} at {student.slot_time}, is not one of "
+                "the teacher's available hours. Add it to the availability grid, or move the "
+                "student to a slot that is on it, before selling lessons.",
+            )
+        blocked = self._blocked_instants(session)
+        placed: list[datetime] = []
+        candidate = first_date
+        for offset in range(count):
+            for week in range(PLACEMENT_SEARCH_WEEKS):
+                # Recombined with the local time each week rather than by adding
+                # to an instant, so the series keeps its wall-clock time across a
+                # daylight-saving change.
+                starts_at = self._at(candidate + timedelta(weeks=week), student.slot_time)
+                if starts_at not in blocked:
+                    break
+            else:
+                seq = first_seq + offset
+                raise StoreError(
+                    409,
+                    "NO_OPEN_SLOT_FOUND",
+                    f"Lesson {seq} for {student.name} could not be placed: their "
+                    f"{student.slot_time} slot is taken or blacked out every week for "
+                    f"{PLACEMENT_SEARCH_WEEKS} weeks from {candidate.isoformat()}. "
+                    "Nothing was created.",
+                )
+            # Hold the instant against the rest of this same run, and carry on
+            # from where the lesson actually landed rather than from where it was
+            # nominally due.
+            blocked.add(starts_at)
+            placed.append(starts_at)
+            candidate = self._studio(starts_at).date() + timedelta(weeks=1)
+        return placed
+
     def _place_weekly_lessons(
         self,
         session: Session,
         student: StudentRecord,
         package_id: int,
         *,
-        count: int,
         first_seq: int,
-        first_date: date,
+        starts_ats: list[datetime],
     ) -> None:
-        """`count` lessons, one per week, from `first_date` on the weekly slot.
+        """Write `starts_ats` out as consecutive lessons from `first_seq` on.
 
-        The only place lesson dates are generated, used both by opening a
-        package and by renewing one, so the two cannot drift apart. It is
-        blackout- and availability-blind on purpose: a generated date can land
-        on a blackout or outside the grid, exactly as it does today. Fixing that
-        is #11, and fixing it here fixes it for both callers at once.
+        Deliberately separate from `_weekly_lesson_dates`: working out where
+        lessons go and writing them down are different jobs, and only the second
+        touches the database. That split is the whole reason a preview can be
+        trusted -- it runs the first half and stops.
         """
-        for index in range(count):
-            self._add_lesson_record(
-                session,
-                student.id,
-                package_id,
-                first_seq + index,
-                self._at(first_date + timedelta(weeks=index), student.slot_time),
-            )
+        for offset, starts_at in enumerate(starts_ats):
+            self._add_lesson_record(session, student.id, package_id, first_seq + offset, starts_at)
 
-    def _open_package_record(
-        self,
-        session: Session,
-        student: StudentRecord,
-        size: int,
-    ) -> None:
+    def _open_package_dates(
+        self, session: Session, student: StudentRecord, size: int
+    ) -> list[datetime]:
+        """Every decision opening a fresh package makes, and none of its writes.
+
+        Split out so the preview endpoint and the real call are literally the
+        same code path up to the point of writing (#11): the refusals below and
+        the dates that come back are identical either way, in the same order, so
+        a dialog can never promise something the confirm does not do.
+        """
         scheduled = session.scalar(
             select(func.count())
             .select_from(LessonRecord)
@@ -1079,6 +1219,24 @@ class DatabaseStore:
         )
         if scheduled:
             raise StoreError(409, "PACKAGE_OPEN", "This student already has scheduled lessons.")
+        return self._weekly_lesson_dates(
+            session,
+            student,
+            count=size,
+            first_seq=1,
+            first_date=self._fresh_package_anchor(student),
+        )
+
+    def _open_package_record(
+        self,
+        session: Session,
+        student: StudentRecord,
+        size: int,
+    ) -> None:
+        # Dates first, package row second. Placement is what can refuse this
+        # call, and refusing before anything is added is what keeps the failure
+        # clean rather than relying on the rollback to tidy up after it.
+        starts_ats = self._open_package_dates(session, student, size)
         current_package = self._current_package(session, student.id)
         package = PackageRecord(
             student_id=student.id,
@@ -1090,13 +1248,22 @@ class DatabaseStore:
         session.add(package)
         session.flush()
         self._place_weekly_lessons(
-            session,
-            student,
-            package.id,
-            count=size,
-            first_seq=1,
-            first_date=self._fresh_package_anchor(student),
+            session, student, package.id, first_seq=1, starts_ats=starts_ats
         )
+
+    def preview_open_package(self, student_id: int, size: int) -> PackagePreview:
+        """The dates `open_package` would create, without creating them.
+
+        The real call with the writes left off -- same guard, same anchor, same
+        placement function -- which is what makes the admin's confirm dialog
+        trustworthy (#11). The session is deliberately `self._sessions()` and not
+        `.begin()`, so nothing here can commit even by accident.
+        """
+        with self._sessions() as session:
+            student = self._student_record(session, student_id)
+            return PackagePreview(
+                size=size, dates=self._open_package_dates(session, student, size)
+            )
 
     def open_package(self, student_id: int, size: int) -> None:
         try:
@@ -1130,36 +1297,12 @@ class DatabaseStore:
         try:
             with self._lock, self._sessions.begin() as session:
                 student = self._student_record(session, student_id)
-                package = self._current_package(session, student.id)
-                last = session.scalar(
-                    select(LessonRecord)
-                    .where(LessonRecord.package_id == package.id)
-                    .order_by(LessonRecord.starts_at.desc())
-                    .limit(1)
+                # Dates before writes, for the same reason opening a package
+                # works that way: placement is what refuses, and it refuses
+                # before `size` has been touched.
+                package, highest_seq, starts_ats = self._renew_package_plan(
+                    session, student, size
                 )
-                highest_seq = (
-                    session.scalar(
-                        select(func.max(LessonRecord.seq)).where(
-                            LessonRecord.package_id == package.id
-                        )
-                    )
-                    or 0
-                )
-                # The day after the package's last lesson, done or scheduled --
-                # a renewal continues the schedule rather than restarting it. A
-                # package that never got any lessons (opened at student creation
-                # and never populated) starts where a fresh one would.
-                if last is None:
-                    earliest = self._fresh_package_anchor(student)
-                else:
-                    earliest = self._studio(last.starts_at).date() + timedelta(days=1)
-                # Never inside a break. #12's forward shift already pushed the
-                # scheduled lessons past `ends_on`, so this only bites when the
-                # package has no lessons left to follow -- but it is the real
-                # pause date either way, not an approximation of one.
-                paused_until = self._paused_until(session, student)
-                if paused_until is not None and paused_until > earliest:
-                    earliest = paused_until
                 package.size += size
                 # The package is no longer finished, so whatever invoice was
                 # sent for it does not cover it. It goes back on the list.
@@ -1168,14 +1311,74 @@ class DatabaseStore:
                     session,
                     student,
                     package.id,
-                    count=size,
                     first_seq=highest_seq + 1,
-                    first_date=self._next_weekly_slot_date(earliest, student.slot_day),
+                    starts_ats=starts_ats,
                 )
         except IntegrityError as error:
             raise StoreError(
                 409, "SLOT_TAKEN", "A generated lesson time is already booked."
             ) from error
+
+    def _renew_package_plan(
+        self, session: Session, student: StudentRecord, size: int
+    ) -> tuple[PackageRecord, int, list[datetime]]:
+        """The package a top-up extends, the `seq` it carries on from, its dates.
+
+        Every decision `renew_package` makes and none of its writes, so the
+        top-up preview is the top-up call minus the persistence -- and, more to
+        the point of #11, so the top-up's placement is `_weekly_lesson_dates`
+        rather than a second copy of it. #13 shipped this path blackout-blind on
+        the explicit promise that it would start sharing the fix; this is where
+        it does.
+        """
+        package = self._current_package(session, student.id)
+        last = session.scalar(
+            select(LessonRecord)
+            .where(LessonRecord.package_id == package.id)
+            .order_by(LessonRecord.starts_at.desc())
+            .limit(1)
+        )
+        highest_seq = (
+            session.scalar(
+                select(func.max(LessonRecord.seq)).where(LessonRecord.package_id == package.id)
+            )
+            or 0
+        )
+        # The day after the package's last lesson, done or scheduled -- a
+        # renewal continues the schedule rather than restarting it. A package
+        # that never got any lessons (opened at student creation and never
+        # populated) starts where a fresh one would.
+        if last is None:
+            earliest = self._fresh_package_anchor(student)
+        else:
+            earliest = self._studio(last.starts_at).date() + timedelta(days=1)
+        # Never inside a break. #12's forward shift already pushed the scheduled
+        # lessons past `ends_on`, so this only bites when the package has no
+        # lessons left to follow -- but it is the real pause date either way, not
+        # an approximation of one.
+        paused_until = self._paused_until(session, student)
+        if paused_until is not None and paused_until > earliest:
+            earliest = paused_until
+        starts_ats = self._weekly_lesson_dates(
+            session,
+            student,
+            count=size,
+            first_seq=highest_seq + 1,
+            first_date=self._next_weekly_slot_date(earliest, student.slot_day),
+        )
+        return package, highest_seq, starts_ats
+
+    def preview_renew_package(self, student_id: int, size: int) -> PackagePreview:
+        """The dates `renew_package` would append, without appending them.
+
+        Read-only session, and `_renew_package_plan` writes nothing, so the
+        `size` bump and the lesson rows the real call makes simply do not happen
+        here.
+        """
+        with self._sessions() as session:
+            student = self._student_record(session, student_id)
+            _, _, dates = self._renew_package_plan(session, student, size)
+            return PackagePreview(size=size, dates=dates)
 
     def mark_invoiced(self, package_id: int) -> None:
         """Record that the invoice for this package went out. Nothing else.

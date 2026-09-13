@@ -195,6 +195,24 @@ class PackageRequest(ApiModel):
     size: Literal[5, 8, 10]
 
 
+class PackagePreview(ApiModel):
+    """The dates a generating call would create, handed back before it creates them.
+
+    Computed by the very function the real call uses, so the list the admin
+    confirms is the list that gets written (#11). A refusal is reported as the
+    error it is -- `WEEKLY_SLOT_NOT_AVAILABLE`, `NO_OPEN_SLOT_FOUND`,
+    `PACKAGE_OPEN` -- rather than as a shorter list of dates, so the admin is
+    never shown a partial plan that the confirm would not honour.
+
+    `dates` is the whole series, in order, including any lesson that had to roll
+    forward past a blackout: there is nothing to reconcile between this and the
+    calendar afterwards.
+    """
+
+    size: int = Field(ge=1)
+    dates: list[datetime]
+
+
 class StatusRequest(ApiModel):
     status: StudentStatus
 
