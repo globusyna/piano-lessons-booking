@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from threading import RLock
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ from .models import (
     Lesson,
     LessonMoveRequest,
     LessonStatus,
+    MoveRequestStatus,
     Package,
     Student,
     StudentStatus,
@@ -325,6 +326,11 @@ class DatabaseStore:
             id=record.id,
             lessonId=record.lesson_id,
             requestedStartsAt=self._studio(record.requested_starts_at),
+            status=record.status,
+            declineReason=record.decline_reason,
+            resolvedAt=(
+                self._studio(record.resolved_at) if record.resolved_at is not None else None
+            ),
         )
 
     @staticmethod
@@ -399,12 +405,35 @@ class DatabaseStore:
             return self._lesson_model(record) if record else None
 
     def move_request_for_lesson(self, lesson_id: int) -> LessonMoveRequest | None:
+        """The request worth showing for this lesson, pending or not.
+
+        A pending request wins, because it is the one still waiting for an
+        answer. Failing that it is the most recently resolved one, which is the
+        whole point of keeping resolved rows: the student is told the move was
+        declined, and why, instead of watching the request disappear.
+
+        The status comes back with it, and **every caller has to read it**.
+        "Not None" used to be a safe shorthand for "this lesson is blocked" and
+        is now wrong: only `pending` blocks anything. A caller that keeps the
+        old shorthand leaves the student permanently unable to ask again, which
+        is the exact bug this change exists to avoid.
+        """
         with self._sessions() as session:
             record = session.scalar(
                 select(LessonMoveRequestRecord).where(
-                    LessonMoveRequestRecord.lesson_id == lesson_id
+                    LessonMoveRequestRecord.lesson_id == lesson_id,
+                    LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
                 )
             )
+            if record is None:
+                record = session.scalar(
+                    select(LessonMoveRequestRecord)
+                    .where(LessonMoveRequestRecord.lesson_id == lesson_id)
+                    .order_by(
+                        LessonMoveRequestRecord.resolved_at.desc(),
+                        LessonMoveRequestRecord.id.desc(),
+                    )
+                )
             return self._move_request_model(record) if record else None
 
     def blackout_at(self, starts_at: datetime) -> Blackout | None:
@@ -457,7 +486,12 @@ class DatabaseStore:
         if exclude_lesson_id is not None:
             lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
         taken = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
-        move_request_query = select(LessonMoveRequestRecord)
+        # Only a *pending* request holds a slot. A declined or expired row keeps
+        # its `requested_starts_at` forever, and reading that as taken would
+        # retire the time from the calendar for good.
+        move_request_query = select(LessonMoveRequestRecord).where(
+            LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value
+        )
         if exclude_move_request_id is not None:
             move_request_query = move_request_query.where(
                 LessonMoveRequestRecord.id != exclude_move_request_id
@@ -500,6 +534,10 @@ class DatabaseStore:
     def request_lesson_move(
         self, token: str, lesson_id: int, starts_at: datetime
     ) -> LessonMoveRequest:
+        # Settle the clock first, so a request of this student's that has just
+        # gone stale is swept to `expired` here rather than standing in the way
+        # of the one being submitted to replace it.
+        self.catch_up()
         try:
             with self._lock, self._sessions.begin() as session:
                 student = self._student_for_token_record(session, token)
@@ -530,9 +568,14 @@ class DatabaseStore:
                         "MOVE_NOTICE_REQUIRED",
                         "Lessons cannot be moved less than 48 hours before they start.",
                     )
+                # `status == "pending"` is load-bearing, not tidiness. Without
+                # it a student whose request was declined weeks ago could never
+                # ask again: the lookup would keep finding that resolved row and
+                # answering MOVE_ALREADY_REQUESTED forever.
                 pending = session.scalar(
                     select(LessonMoveRequestRecord).where(
-                        LessonMoveRequestRecord.lesson_id == lesson.id
+                        LessonMoveRequestRecord.lesson_id == lesson.id,
+                        LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
                     )
                 )
                 if pending is not None:
@@ -558,7 +601,9 @@ class DatabaseStore:
                         "Someone just took that time. Here are the times still open.",
                     )
                 request = LessonMoveRequestRecord(
-                    lesson_id=lesson.id, requested_starts_at=starts_at
+                    lesson_id=lesson.id,
+                    requested_starts_at=starts_at,
+                    status=MoveRequestStatus.PENDING.value,
                 )
                 session.add(request)
                 session.flush()
@@ -569,12 +614,63 @@ class DatabaseStore:
                 409, "SLOT_TAKEN", "Someone just took that time. Here are the times still open."
             ) from error
 
+    @staticmethod
+    def _refuse_if_already_resolved(request: LessonMoveRequestRecord) -> None:
+        """Answer an already-answered request with which answer it got.
+
+        Both endpoints share this so "already declined" and "expired" never
+        collapse back into the flat 404 approve used to give, or into a silent
+        second success. The caller can tell "someone already handled this" from
+        "there is no such request", which is the difference that decides whether
+        to refresh the screen or go looking for a bug.
+        """
+        if request.status == MoveRequestStatus.DECLINED.value:
+            raise StoreError(
+                409,
+                "MOVE_REQUEST_ALREADY_DECLINED",
+                "That move request has already been declined.",
+            )
+        if request.status == MoveRequestStatus.EXPIRED.value:
+            raise StoreError(
+                409,
+                "MOVE_REQUEST_EXPIRED",
+                "That move request expired before it was answered.",
+            )
+
+    def decline_lesson_move(self, request_id: int, reason: str | None) -> LessonMoveRequest:
+        """Turn a pending request down, keeping it as an answer the student sees.
+
+        Nothing about the lesson changes -- not `starts_at`, not `status`, not
+        `seq`. The request row stops being pending, which is what frees the slot
+        it was holding and lets the student ask again; the row itself stays, so
+        the student is told what happened instead of watching it vanish.
+
+        Unconditional by design: there is no slot-availability recheck, because
+        declining takes nothing.
+        """
+        with self._lock, self._sessions.begin() as session:
+            request = session.get(LessonMoveRequestRecord, request_id)
+            if request is None:
+                raise StoreError(404, "NOT_FOUND", "Move request not found.")
+            self._refuse_if_already_resolved(request)
+            request.status = MoveRequestStatus.DECLINED.value
+            request.decline_reason = reason
+            request.resolved_at = clock.now()
+            session.flush()
+            return self._move_request_model(request)
+
     def approve_lesson_move(self, request_id: int) -> Lesson:
         try:
             with self._lock, self._sessions.begin() as session:
                 request = session.get(LessonMoveRequestRecord, request_id)
                 if request is None:
                     raise StoreError(404, "NOT_FOUND", "Move request not found.")
+                # Before the slot recheck, not after. A request that has already
+                # been answered -- declined, or swept to `expired` by the sweep
+                # this endpoint just ran -- has nothing left to approve, and
+                # saying so beats the SLOT_TAKEN the recheck used to produce,
+                # which pointed at the wrong problem entirely.
+                self._refuse_if_already_resolved(request)
                 lesson = session.get(LessonRecord, request.lesson_id)
                 if lesson is None:
                     session.delete(request)
@@ -726,10 +822,17 @@ class DatabaseStore:
                 # A pause never silently cancels a move request: the student
                 # would watch it vanish without an answer. The teacher approves
                 # or declines it, then the break can be taken.
+                # Pending only, for the same reason everywhere else in this
+                # file: an answered request is history. Declining is what clears
+                # this gate, which is the point -- #12 blocks the break until the
+                # request has an answer, and now there are two ways to give one.
                 pending = session.scalar(
                     select(LessonMoveRequestRecord.id)
                     .join(LessonRecord, LessonRecord.id == LessonMoveRequestRecord.lesson_id)
-                    .where(LessonRecord.student_id == student.id)
+                    .where(
+                        LessonRecord.student_id == student.id,
+                        LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
+                    )
                     .limit(1)
                 )
                 if pending is not None:
@@ -806,14 +909,55 @@ class DatabaseStore:
                 resumed += 1
             return resumed
 
+    def expire_stale_move_requests(self) -> int:
+        """End every pending request time has overtaken, and return how many.
+
+        A pending request is stale once either end of it is in the past: the
+        time it asked for has arrived, or the lesson it wanted to move is no
+        longer scheduled -- swept to `done` by `complete_due_lessons`, or marked
+        done early by the teacher. Approving either one would move a lesson to a
+        time that has already been and gone.
+
+        Expired rather than deleted, for the same reason a decline is kept: the
+        student gets an answer. It is the identical catch-up-on-read shape as
+        `complete_due_lessons` -- same clock, same call sites, same single-writer
+        lock -- and idempotent for the same reason, since a row that is already
+        `expired` no longer matches "stale *pending*". A declined or expired row
+        is never re-evaluated; once answered, a request keeps the answer it got.
+        """
+        now = clock.now()
+        with self._lock, self._sessions.begin() as session:
+            stale = session.scalars(
+                select(LessonMoveRequestRecord)
+                .join(LessonRecord, LessonRecord.id == LessonMoveRequestRecord.lesson_id)
+                .where(
+                    LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
+                    or_(
+                        LessonMoveRequestRecord.requested_starts_at <= now,
+                        LessonRecord.status != LessonStatus.SCHEDULED.value,
+                    ),
+                )
+                .order_by(LessonMoveRequestRecord.id)
+            ).all()
+            for request in stale:
+                request.status = MoveRequestStatus.EXPIRED.value
+                request.resolved_at = now
+            return len(stale)
+
     def catch_up(self) -> None:
         """Everything the clock has quietly made true since the last read.
 
-        The read endpoints call this single method so the two catch-ups cannot
-        drift apart: lessons whose time has passed are completed, and breaks
-        that have run out are lifted.
+        The read endpoints call this single method so the catch-ups cannot drift
+        apart: lessons whose time has passed are completed, move requests time
+        has overtaken are expired, and breaks that have run out are lifted.
+
+        The order matters in one place. Completing lessons runs first so that a
+        lesson which just went `done` is seen as done by the move-request sweep
+        in the same pass, rather than leaving its request pending until the next
+        read.
         """
         self.complete_due_lessons()
+        self.expire_stale_move_requests()
         self.expire_due_pauses()
 
     def set_hours(self, day: int, times: list[str]) -> None:
@@ -1199,9 +1343,18 @@ class DatabaseStore:
     def list_move_requests(
         self,
     ) -> list[tuple[Student, Lesson, LessonMoveRequest]]:
+        """The move requests still waiting for an answer, for the alerts queue.
+
+        Pending only. A declined or expired request needs nothing further from
+        the teacher, and it used to leave this list by being deleted; now that
+        it survives, the filter is what takes its place. Without it the alerts
+        page would accumulate every request ever answered.
+        """
         with self._sessions() as session:
             requests = session.scalars(
-                select(LessonMoveRequestRecord).order_by(
+                select(LessonMoveRequestRecord)
+                .where(LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value)
+                .order_by(
                     LessonMoveRequestRecord.requested_starts_at,
                     LessonMoveRequestRecord.id,
                 )

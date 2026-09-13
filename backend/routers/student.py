@@ -3,8 +3,10 @@ from datetime import date, datetime
 from fastapi import APIRouter, Query
 
 from ..models import (
+    Lesson,
     PauseRequest,
     RescheduleRequest,
+    Student,
     StudentLesson,
     StudentSummary,
     StudentView,
@@ -13,6 +15,34 @@ from ..store import STUDIO_TZ, StoreError, store
 
 
 router = APIRouter(prefix="/s", tags=["Student"])
+
+
+def _student_lesson(lesson: Lesson, student: Student) -> StudentLesson:
+    """One upcoming lesson, including what became of any request to move it.
+
+    The move request is read once and its **status** is what everything here
+    turns on. `is not None` used to be enough to mean "already asked, cannot ask
+    again"; now that a declined or expired request survives, that test would
+    leave the student staring at a Move button that never comes back. Only a
+    pending request blocks, and only a pending one has a live requested time.
+    """
+    request = store.move_request_for_lesson(lesson.id)
+    pending = request is not None and request.status == "pending"
+    resolved = request if request is not None and not pending else None
+    return StudentLesson(
+        id=lesson.id,
+        seq=lesson.seq,
+        startsAt=lesson.starts_at,
+        status=lesson.status,
+        canMove=(
+            student.status.value == "active"
+            and store.can_request_lesson_move(lesson.starts_at)
+            and not pending
+        ),
+        requestedStartsAt=request.requested_starts_at if pending else None,
+        moveRequestStatus=resolved.status if resolved else None,
+        declineReason=resolved.decline_reason if resolved else None,
+    )
 
 
 def _view(token: str) -> StudentView:
@@ -27,25 +57,7 @@ def _view(token: str) -> StudentView:
         for lesson in store.lesson_history(student.id)
         if lesson.status.value == "scheduled" and lesson.starts_at > now
     ]
-    lessons = [
-        StudentLesson(
-            id=lesson.id,
-            seq=lesson.seq,
-            startsAt=lesson.starts_at,
-            status=lesson.status,
-            canMove=(
-                student.status.value == "active"
-                and store.can_request_lesson_move(lesson.starts_at)
-                and store.move_request_for_lesson(lesson.id) is None
-            ),
-            requestedStartsAt=(
-                request.requested_starts_at
-                if (request := store.move_request_for_lesson(lesson.id))
-                else None
-            ),
-        )
-        for lesson in upcoming
-    ]
+    lessons = [_student_lesson(lesson, student) for lesson in upcoming]
     return StudentView(
         student=StudentSummary(id=student.id, name=student.name, status=student.status),
         package=student.pkg,

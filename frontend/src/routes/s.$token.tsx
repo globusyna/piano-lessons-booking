@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { pianoKeys, useOpenSlots, useStudentView } from "@/hooks/use-piano-store";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
+import type { StudentLesson } from "@/lib/piano-data";
 import { PAUSE_WEEKS, fmt, pauseReturnKey } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/s/$token")({
@@ -172,6 +173,7 @@ function StudentPage() {
                   {fmt.time(view.nextLesson.requestedStartsAt)}.
                 </Notice>
               )}
+              {moveAnswer(view.nextLesson) && <Notice>{moveAnswer(view.nextLesson)}</Notice>}
               {view.nextLesson.canMove && (
                 <button
                   type="button"
@@ -204,6 +206,7 @@ function StudentPage() {
                         {fmt.dateShort(l.requestedStartsAt)} at {fmt.time(l.requestedStartsAt)}
                       </p>
                     )}
+                    {moveAnswer(l) && <p className="mt-1 text-sm text-slate">{moveAnswer(l)}</p>}
                   </div>
                   {l.canMove && (
                     <button
@@ -285,6 +288,26 @@ function StudentPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return <main className="mx-auto w-full max-w-[420px] px-6 pt-12 pb-20">{children}</main>;
+}
+
+/** What to tell the student about a move request that has been answered.
+ *
+ * Null while nothing has been answered -- a pending request is still shown
+ * through `requestedStartsAt`, as it always was. The Move button is not
+ * governed here: `canMove` comes back true after either answer, because being
+ * able to try again is the entire point of not leaving a resolved request in
+ * the way.
+ */
+function moveAnswer(lesson: StudentLesson): string | null {
+  if (lesson.moveRequestStatus === "expired") {
+    return "Your move request expired before it could be reviewed.";
+  }
+  if (lesson.moveRequestStatus === "declined") {
+    return lesson.declineReason
+      ? `Andrea couldn't move this lesson: ${lesson.declineReason}`
+      : "Andrea couldn't move this lesson.";
+  }
+  return null;
 }
 
 function Notice({ children }: { children: React.ReactNode }) {

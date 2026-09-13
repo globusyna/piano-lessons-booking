@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DeclineMoveRequest } from "@/components/DeclineMoveRequest";
 import { TimeGrid } from "@/components/TimeGrid";
 import {
   AlertDialog,
@@ -101,20 +102,42 @@ function WeekView() {
                   </p>
                   {cell.moveRequest && (
                     <div className="mt-4 border-l-2 border-felt pl-3">
-                      <p className="text-sm font-medium">Move requested</p>
+                      <p className="text-sm font-medium">
+                        {cell.moveRequest.status === "pending"
+                          ? "Move requested"
+                          : cell.moveRequest.status === "declined"
+                            ? "Move declined"
+                            : "Move request expired"}
+                      </p>
                       <p className="tnum mt-1 text-sm text-slate">
                         {fmt.day(cell.moveRequest.requestedStartsAt)}{" "}
                         {fmt.dateShort(cell.moveRequest.requestedStartsAt)} ·{" "}
                         {fmt.time(cell.moveRequest.requestedStartsAt)}
                       </p>
-                      <button
-                        type="button"
-                        disabled={approvingRequestId === cell.moveRequest.id}
-                        onClick={() => void approveMoveRequest(cell.moveRequest!.id)}
-                        className="mt-3 bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-50"
-                      >
-                        Approve move request
-                      </button>
+                      {/* An answered request is read-only history. Before this it
+                          vanished from the cell entirely, because the row was
+                          deleted; now it stays, with neither action offered. */}
+                      {cell.moveRequest.status === "declined" && cell.moveRequest.declineReason && (
+                        <p className="mt-1 text-sm text-slate italic">
+                          “{cell.moveRequest.declineReason}”
+                        </p>
+                      )}
+                      {cell.moveRequest.status === "pending" && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <DeclineMoveRequest
+                            requestId={cell.moveRequest.id}
+                            studentName={cell.studentName}
+                          />
+                          <button
+                            type="button"
+                            disabled={approvingRequestId === cell.moveRequest.id}
+                            onClick={() => void approveMoveRequest(cell.moveRequest!.id)}
+                            className="bg-felt px-3 py-2 text-sm text-felt-foreground disabled:opacity-50"
+                          >
+                            Approve move request
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                   <button

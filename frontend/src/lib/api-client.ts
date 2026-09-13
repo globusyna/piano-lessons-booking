@@ -187,6 +187,15 @@ export const api = {
       { method: "POST" },
       true,
     ),
+  // The declined request comes back, not a bare ok, so the caller can show the
+  // answer without a second round trip. `reason` is optional all the way down:
+  // null means the teacher gave none.
+  declineMoveRequest: (id: number, reason?: string) =>
+    request<{ ok: true; data: LessonMoveRequest }>(
+      `/admin/move-requests/${id}/decline`,
+      { method: "POST", body: json({ reason: reason ?? null }) },
+      true,
+    ),
   alerts: async () => (await request<{ alerts: AdminAlert[] }>("/admin/alerts", {}, true)).alerts,
 };
 
