@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -194,6 +195,44 @@ def test_store_adopts_a_database_built_before_migrations_existed(tmp_path) -> No
     assert store.student_for_token("legacy").name == "Legacy Student"
     assert list(store.students) == [1]
     store.engine.dispose()
+
+
+def test_downgrading_refuses_to_shrink_a_package_that_was_topped_up(tmp_path) -> None:
+    """Undoing the size relaxation is lossy, so it refuses rather than guessing.
+
+    A package renewed to 20 has no value under `size IN (5, 8, 10)` that the
+    migration could pick for it without inventing one, and inventing one is how
+    a number quietly becomes wrong. It raises with the row untouched instead.
+
+    The check has to run before the table is rebuilt, not as a CHECK on the way
+    back in: SQLite runs DDL outside the surrounding transaction under pysqlite,
+    so a constraint that fires during the rebuild raises with `packages` already
+    dropped and recreated empty. This asserts the row is still there.
+    """
+    url = f"sqlite+pysqlite:///{tmp_path / 'topped-up.db'}"
+    engine = create_database_engine(url)
+    upgrade_to_head(engine)
+    with create_session_factory(engine).begin() as session:
+        session.add(
+            StudentRecord(
+                id=1, name="Topped Up", status="active", token="topped", slot_day=2,
+                slot_time="16:15",
+            )
+        )
+        session.flush()
+        session.add(PackageRecord(student_id=1, size=20, used=4, period_no=1, invoice_sent=False))
+
+    with pytest.raises(RuntimeError, match="size IN"):
+        with engine.begin() as connection:
+            command.downgrade(alembic_config(connection), "-1")
+
+    with engine.connect() as connection:
+        packages = connection.execute(text("SELECT size, used FROM packages")).all()
+        revision = current_revision(connection)
+    assert packages == [(20, 4)]
+    assert revision == head_revision()
+    assert _table_names(engine) == {table.name for table in Base.metadata.sorted_tables}
+    engine.dispose()
 
 
 def test_migrate_target_upgrades_the_configured_database(tmp_path) -> None:

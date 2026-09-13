@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import hash_password
-from .database import create_database_engine, create_session_factory
+from .database import Base, create_database_engine, create_session_factory
 from .db_models import (
     AvailabilitySlotRecord,
     BlackoutRecord,
@@ -143,9 +143,35 @@ class DatabaseStore:
 
     def reset(self) -> None:
         with self._lock:
+            self._discard_every_row()
             downgrade_to_base(self.engine)
             upgrade_to_head(self.engine)
             self._seed_if_empty()
+
+    def _discard_every_row(self) -> None:
+        """Empty every table before the schema is unwound.
+
+        `reset` throws the whole database away and reseeds it, so by the time
+        the downgrades run there is nothing left worth protecting -- but a
+        downgrade cannot know that from the inside. `ac812725de6c` refuses to
+        run while a package has been topped up past the old price list, because
+        it will not invent a size for it (#13). That guard is right for someone
+        rolling a real database back and wrong as a way of stopping a test
+        wiping its own fixture, so the rows go first and the downgrade runs over
+        an empty database.
+
+        Deleting rather than dropping keeps `reset` on the migration path: every
+        test still exercises a full downgrade-to-base and upgrade-to-head, which
+        is what #15 built it out of and what makes a broken revision show up in
+        the suite rather than in production.
+
+        Children first -- `sorted_tables` is dependency order, so reversing it
+        clears a table before whatever it points at. `alembic_version` is not on
+        `Base.metadata` and is deliberately left alone: the downgrade needs it.
+        """
+        with self._sessions.begin() as session:
+            for table in reversed(Base.metadata.sorted_tables):
+                session.execute(delete(table))
 
     def _seed_if_empty(self) -> None:
         with self._sessions.begin() as session:

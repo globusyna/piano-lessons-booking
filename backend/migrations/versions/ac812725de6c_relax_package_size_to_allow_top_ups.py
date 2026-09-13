@@ -60,9 +60,23 @@ COLUMNS = "id, student_id, size, used, period_no, invoice_sent"
 def _rebuild_packages_with(size_check: str) -> None:
     """Rebuild ``packages`` carrying ``size_check`` on ``size``, rows and all.
 
-    Every row goes through the new table's constraints on the way back in, which
-    is what makes the downgrade below refuse rather than quietly lose data.
+    The row check comes first, before anything is created or dropped, and that
+    ordering is the whole safety story. SQLite runs DDL outside the surrounding
+    transaction under pysqlite, so a ``CHECK`` that fails on the way back in
+    does raise -- but it raises with ``packages`` already dropped and recreated
+    empty, the rows surviving only in the copy table. Refusing up front means
+    the table is never touched at all when a row cannot make it across.
     """
+    bind = op.get_bind()
+    blocked = bind.execute(
+        sa.text(f"SELECT count(*) FROM packages WHERE NOT ({size_check})")  # noqa: S608
+    ).scalar()
+    if blocked:
+        raise RuntimeError(
+            f"{blocked} package(s) do not satisfy CHECK ({size_check}) and this migration "
+            "will not invent a value for them. Decide what those packages should hold, "
+            "change them, and run it again."
+        )
     op.execute(f"CREATE TABLE {COPY_TABLE} AS SELECT {COLUMNS} FROM packages")
     op.drop_table("packages")
     op.create_table(
@@ -102,10 +116,9 @@ def downgrade() -> None:
     value under the old rule that it could be changed to without one being
     invented for it.
 
-    So this does not clamp and it does not delete. The rows are copied back into
-    a table carrying the old ``CHECK``, SQLite refuses the topped-up ones, and
-    the migration raises: the transaction rolls back with every package still
-    exactly as it was. Whoever needs to go back has to decide first what a
-    topped-up package should become, and say so in a data fix of their own.
+    So this does not clamp and it does not delete. It raises, with every package
+    still exactly as it was, and says how many are in the way. Whoever needs to
+    go back has to decide first what a topped-up package should become, and say
+    so in a data fix of their own.
     """
     _rebuild_packages_with(SIZE_IS_A_PRICE_LIST_SIZE)
