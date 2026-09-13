@@ -256,6 +256,13 @@ class DatabaseStore:
                 )
                 session.add(package)
                 session.flush()
+                # Deliberately not `_weekly_lesson_dates` (#11). This is the demo
+                # studio's fixture, not a generation call: it writes lessons that
+                # already happened, at dates chosen so the seeded alerts and
+                # progress bars show something worth looking at, and it adds the
+                # blackout rows afterwards. Placing it "properly" would move every
+                # seeded date and skip the very collisions the fixture is posing
+                # on purpose. Nothing a teacher does reaches it.
                 for seq in range(1, used + 1):
                     lesson_day = monday + timedelta(days=day - 1, weeks=seq - used - 1)
                     self._add_lesson_record(
