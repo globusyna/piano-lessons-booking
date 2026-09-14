@@ -2,7 +2,14 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 
 class ApiModel(BaseModel):
@@ -65,18 +72,65 @@ class Lesson(ApiModel):
 
 
 class StudentLesson(ApiModel):
+    """One upcoming lesson as the student sees it.
+
+    A *pending* move request is still reported through `requested_starts_at`
+    alone, exactly as before -- "pending" was always representable. The two
+    fields below are only for a request that has been answered: `declined` with
+    an optional reason, or `expired`. In that case `requested_starts_at` stays
+    `None`, because a resolved request has no live requested time left to show.
+    """
+
     id: int
     seq: int
     starts_at: datetime = Field(alias="startsAt")
     status: LessonStatus
     can_move: bool = Field(alias="canMove")
     requested_starts_at: datetime | None = Field(default=None, alias="requestedStartsAt")
+    move_request_status: Literal["declined", "expired"] | None = Field(
+        default=None, alias="moveRequestStatus"
+    )
+    decline_reason: str | None = Field(default=None, alias="declineReason")
+
+
+class MoveRequestStatus(StrEnum):
+    """How a move request ended, or that it has not.
+
+    `PENDING` is the only status that blocks anything: it is what keeps a
+    lesson's slot reserved, what the alerts queue lists, and what stops a
+    second request for the same lesson. `DECLINED` and `EXPIRED` are history
+    and must never be read as a block -- that mistake is what would leave a
+    student unable to ever ask again (#10).
+    """
+
+    PENDING = "pending"
+    DECLINED = "declined"
+    EXPIRED = "expired"
 
 
 class LessonMoveRequest(ApiModel):
     id: int
     lesson_id: int = Field(alias="lessonId")
     requested_starts_at: datetime = Field(alias="requestedStartsAt")
+    status: Literal["pending", "declined", "expired"] = MoveRequestStatus.PENDING.value
+    decline_reason: str | None = Field(default=None, alias="declineReason")
+    resolved_at: datetime | None = Field(default=None, alias="resolvedAt")
+
+
+class DeclineMoveRequestBody(ApiModel):
+    """The body of a decline. Everything about it is optional.
+
+    An absent body, `{}` and `{"reason": null}` all mean "no reason given", and
+    so does a reason that is nothing but whitespace -- `reason_or_none` below
+    is what the store stores, so an empty string never reaches the database
+    pretending to be an explanation.
+    """
+
+    reason: str | None = Field(default=None, max_length=500)
+
+    def reason_or_none(self) -> str | None:
+        stripped = (self.reason or "").strip()
+        return stripped or None
 
 
 class StudentView(ApiModel):
@@ -146,6 +200,34 @@ class PackageRequest(ApiModel):
     """
 
     size: Literal[5, 8, 10]
+
+
+# The same price list, spelled for a query parameter. A JSON body carries a
+# number, so `PackageRequest.size` above can hold the literal straight; a query
+# string carries text, so this one is read as an integer first and then held to
+# exactly the same three values. Two spellings, one price list -- previewing a
+# size that cannot be bought would be previewing nothing. The coercion is
+# deliberately not applied to the body model, which would start accepting
+# `{"size": "5"}` for no reason.
+PurchasableSize = Annotated[Literal[5, 8, 10], BeforeValidator(int)]
+
+
+class PackagePreview(ApiModel):
+    """The dates a generating call would create, handed back before it creates them.
+
+    Computed by the very function the real call uses, so the list the admin
+    confirms is the list that gets written (#11). A refusal is reported as the
+    error it is -- `WEEKLY_SLOT_NOT_AVAILABLE`, `NO_OPEN_SLOT_FOUND`,
+    `PACKAGE_OPEN` -- rather than as a shorter list of dates, so the admin is
+    never shown a partial plan that the confirm would not honour.
+
+    `dates` is the whole series, in order, including any lesson that had to roll
+    forward past a blackout: there is nothing to reconcile between this and the
+    calendar afterwards.
+    """
+
+    size: int = Field(ge=1)
+    dates: list[datetime]
 
 
 class StatusRequest(ApiModel):

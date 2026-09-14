@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DeclineMoveRequest } from "@/components/DeclineMoveRequest";
 import { PackageProgress } from "@/components/PackageProgress";
 import { pianoKeys } from "@/hooks/use-piano-store";
 import { api, errorMessage } from "@/lib/api-client";
@@ -131,20 +132,32 @@ function AlertsPage() {
                 )}
               </div>
               {alert.type === "moveRequest" ? (
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.approveMoveRequest(alert.moveRequest.id);
-                      await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
-                      toast("Move request approved");
-                    } catch (error) {
-                      toast.error(errorMessage(error));
-                    }
-                  }}
-                  className="bg-felt px-3 py-2 text-sm text-felt-foreground"
-                >
-                  Approve move request
-                </button>
+                /* Pending only. `list_move_requests` already filters the feed to
+                   pending requests, so this guard is the backend filter showing
+                   through rather than a second rule -- but an answered request
+                   must never offer an action, wherever it turns up. */
+                alert.moveRequest.status === "pending" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DeclineMoveRequest
+                      requestId={alert.moveRequest.id}
+                      studentName={alert.student.name}
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.approveMoveRequest(alert.moveRequest.id);
+                          await queryClient.invalidateQueries({ queryKey: pianoKeys.all });
+                          toast("Move request approved");
+                        } catch (error) {
+                          toast.error(errorMessage(error));
+                        }
+                      }}
+                      className="bg-felt px-3 py-2 text-sm text-felt-foreground"
+                    >
+                      Approve move request
+                    </button>
+                  </div>
+                )
               ) : (
                 <InvoiceAlertActions
                   studentId={alert.student.id}

@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from threading import RLock
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -30,7 +30,9 @@ from .models import (
     Lesson,
     LessonMoveRequest,
     LessonStatus,
+    MoveRequestStatus,
     Package,
+    PackagePreview,
     Student,
     StudentStatus,
 )
@@ -38,6 +40,33 @@ from .models import (
 
 STUDIO_TZ = ZoneInfo("Europe/Oslo")
 ROW_TIMES = ["14:00", "14:45", "15:30", "16:15", "17:00", "17:45", "18:30"]
+
+# Spelled out rather than derived from `calendar.day_name`, which follows the
+# process locale, and covering 6 and 7 so widening the week (#18) needs no edit
+# here.
+WEEKDAY_NAMES = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+}
+
+# How far a *single* lesson's placement may search forward when its weekly slot
+# is blocked, in weeks, counting the lesson's own candidate week as the first
+# (#11). Running off the end of it fails the whole generating call with
+# `NO_OPEN_SLOT_FOUND`.
+#
+# A year, for two reasons. It is far longer than any real run of blackouts -- the
+# longest thing a studio blacks out is a summer, ten weeks or so -- so the bound
+# never fires on data a teacher would recognise as ordinary. And it is the point
+# where "this slot is busy for a while" stops being a plausible reading: a weekly
+# slot that is blocked every single one of fifty-two consecutive weeks is a slot
+# the teacher has effectively given up, and the useful answer is to say so rather
+# than to book a beginner's fifth lesson in 2029.
+PLACEMENT_SEARCH_WEEKS = 52
 
 
 class StudioClock:
@@ -227,6 +256,13 @@ class DatabaseStore:
                 )
                 session.add(package)
                 session.flush()
+                # Deliberately not `_weekly_lesson_dates` (#11). This is the demo
+                # studio's fixture, not a generation call: it writes lessons that
+                # already happened, at dates chosen so the seeded alerts and
+                # progress bars show something worth looking at, and it adds the
+                # blackout rows afterwards. Placing it "properly" would move every
+                # seeded date and skip the very collisions the fixture is posing
+                # on purpose. Nothing a teacher does reaches it.
                 for seq in range(1, used + 1):
                     lesson_day = monday + timedelta(days=day - 1, weeks=seq - used - 1)
                     self._add_lesson_record(
@@ -325,6 +361,11 @@ class DatabaseStore:
             id=record.id,
             lessonId=record.lesson_id,
             requestedStartsAt=self._studio(record.requested_starts_at),
+            status=record.status,
+            declineReason=record.decline_reason,
+            resolvedAt=(
+                self._studio(record.resolved_at) if record.resolved_at is not None else None
+            ),
         )
 
     @staticmethod
@@ -399,12 +440,35 @@ class DatabaseStore:
             return self._lesson_model(record) if record else None
 
     def move_request_for_lesson(self, lesson_id: int) -> LessonMoveRequest | None:
+        """The request worth showing for this lesson, pending or not.
+
+        A pending request wins, because it is the one still waiting for an
+        answer. Failing that it is the most recently resolved one, which is the
+        whole point of keeping resolved rows: the student is told the move was
+        declined, and why, instead of watching the request disappear.
+
+        The status comes back with it, and **every caller has to read it**.
+        "Not None" used to be a safe shorthand for "this lesson is blocked" and
+        is now wrong: only `pending` blocks anything. A caller that keeps the
+        old shorthand leaves the student permanently unable to ask again, which
+        is the exact bug this change exists to avoid.
+        """
         with self._sessions() as session:
             record = session.scalar(
                 select(LessonMoveRequestRecord).where(
-                    LessonMoveRequestRecord.lesson_id == lesson_id
+                    LessonMoveRequestRecord.lesson_id == lesson_id,
+                    LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
                 )
             )
+            if record is None:
+                record = session.scalar(
+                    select(LessonMoveRequestRecord)
+                    .where(LessonMoveRequestRecord.lesson_id == lesson_id)
+                    .order_by(
+                        LessonMoveRequestRecord.resolved_at.desc(),
+                        LessonMoveRequestRecord.id.desc(),
+                    )
+                )
             return self._move_request_model(record) if record else None
 
     def blackout_at(self, starts_at: datetime) -> Blackout | None:
@@ -435,6 +499,56 @@ class DatabaseStore:
             and today <= local.date() <= today + timedelta(days=21)
         )
 
+    def _blocked_instants(
+        self,
+        session: Session,
+        *,
+        exclude_lesson_id: int | None = None,
+        exclude_move_request_id: int | None = None,
+    ) -> set[datetime]:
+        """Every studio instant that is not free to put a lesson on.
+
+        The single definition of "taken" in this store (#11). An instant is
+        blocked when a blackout covers it, when a `lessons` row sits on it, or
+        when a *pending* move request is holding it. Both readers come through
+        here -- the student-facing open-slot grid and package generation -- so
+        the grid cannot offer a time generation would refuse, and generation
+        cannot hand out a time the grid considers spoken for.
+
+        Any lesson status counts, not only `scheduled`. `lessons.starts_at` is
+        unique across the whole studio, so a lesson already marked done still
+        owns its instant: writing over it is an `IntegrityError`, not a double
+        booking to be untangled afterwards.
+
+        Only a *pending* move request counts. A declined or expired row keeps
+        its `requested_starts_at` forever (#10), and reading that as taken would
+        retire the time from the calendar for good.
+
+        The two excludes belong to a lesson being rescheduled: its own row and
+        its own pending request must not block the move they are the subject of.
+        Generation passes neither -- it is placing new lessons and has nothing of
+        its own to step over.
+        """
+        lesson_query = select(LessonRecord)
+        if exclude_lesson_id is not None:
+            lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
+        blocked = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
+        move_request_query = select(LessonMoveRequestRecord).where(
+            LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value
+        )
+        if exclude_move_request_id is not None:
+            move_request_query = move_request_query.where(
+                LessonMoveRequestRecord.id != exclude_move_request_id
+            )
+        blocked.update(
+            self._studio(record.requested_starts_at)
+            for record in session.scalars(move_request_query)
+        )
+        blocked.update(
+            self._studio(record.starts_at) for record in session.scalars(select(BlackoutRecord))
+        )
+        return blocked
+
     def _open_slots(
         self,
         session: Session,
@@ -451,24 +565,14 @@ class DatabaseStore:
         first, last = max(from_date, today), min(to_date, today + timedelta(days=21))
         if first > last:
             return []
-        lesson_query = select(LessonRecord).where(
-            LessonRecord.status == LessonStatus.SCHEDULED.value
+        # What counts as taken lives in `_blocked_instants`, not here, so this
+        # grid and package generation cannot drift into two definitions of
+        # "open" (#11).
+        blocked = self._blocked_instants(
+            session,
+            exclude_lesson_id=exclude_lesson_id,
+            exclude_move_request_id=exclude_move_request_id,
         )
-        if exclude_lesson_id is not None:
-            lesson_query = lesson_query.where(LessonRecord.id != exclude_lesson_id)
-        taken = {self._studio(record.starts_at) for record in session.scalars(lesson_query)}
-        move_request_query = select(LessonMoveRequestRecord)
-        if exclude_move_request_id is not None:
-            move_request_query = move_request_query.where(
-                LessonMoveRequestRecord.id != exclude_move_request_id
-            )
-        taken.update(
-            self._studio(record.requested_starts_at)
-            for record in session.scalars(move_request_query)
-        )
-        blocked = {
-            self._studio(record.starts_at) for record in session.scalars(select(BlackoutRecord))
-        }
         availability: dict[int, list[str]] = {day: [] for day in range(1, 6)}
         availability_records = session.scalars(
             select(AvailabilitySlotRecord).order_by(
@@ -482,11 +586,7 @@ class DatabaseStore:
         while current <= last:
             for slot_time in availability.get(current.isoweekday(), []):
                 candidate = self._at(current, slot_time)
-                if (
-                    candidate not in taken
-                    and candidate not in blocked
-                    and self.in_move_window(candidate)
-                ):
+                if candidate not in blocked and self.in_move_window(candidate):
                     slots.append(candidate)
             current += timedelta(days=1)
         return sorted(slots)
@@ -500,6 +600,10 @@ class DatabaseStore:
     def request_lesson_move(
         self, token: str, lesson_id: int, starts_at: datetime
     ) -> LessonMoveRequest:
+        # Settle the clock first, so a request of this student's that has just
+        # gone stale is swept to `expired` here rather than standing in the way
+        # of the one being submitted to replace it.
+        self.catch_up()
         try:
             with self._lock, self._sessions.begin() as session:
                 student = self._student_for_token_record(session, token)
@@ -530,9 +634,14 @@ class DatabaseStore:
                         "MOVE_NOTICE_REQUIRED",
                         "Lessons cannot be moved less than 48 hours before they start.",
                     )
+                # `status == "pending"` is load-bearing, not tidiness. Without
+                # it a student whose request was declined weeks ago could never
+                # ask again: the lookup would keep finding that resolved row and
+                # answering MOVE_ALREADY_REQUESTED forever.
                 pending = session.scalar(
                     select(LessonMoveRequestRecord).where(
-                        LessonMoveRequestRecord.lesson_id == lesson.id
+                        LessonMoveRequestRecord.lesson_id == lesson.id,
+                        LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
                     )
                 )
                 if pending is not None:
@@ -558,7 +667,9 @@ class DatabaseStore:
                         "Someone just took that time. Here are the times still open.",
                     )
                 request = LessonMoveRequestRecord(
-                    lesson_id=lesson.id, requested_starts_at=starts_at
+                    lesson_id=lesson.id,
+                    requested_starts_at=starts_at,
+                    status=MoveRequestStatus.PENDING.value,
                 )
                 session.add(request)
                 session.flush()
@@ -569,12 +680,63 @@ class DatabaseStore:
                 409, "SLOT_TAKEN", "Someone just took that time. Here are the times still open."
             ) from error
 
+    @staticmethod
+    def _refuse_if_already_resolved(request: LessonMoveRequestRecord) -> None:
+        """Answer an already-answered request with which answer it got.
+
+        Both endpoints share this so "already declined" and "expired" never
+        collapse back into the flat 404 approve used to give, or into a silent
+        second success. The caller can tell "someone already handled this" from
+        "there is no such request", which is the difference that decides whether
+        to refresh the screen or go looking for a bug.
+        """
+        if request.status == MoveRequestStatus.DECLINED.value:
+            raise StoreError(
+                409,
+                "MOVE_REQUEST_ALREADY_DECLINED",
+                "That move request has already been declined.",
+            )
+        if request.status == MoveRequestStatus.EXPIRED.value:
+            raise StoreError(
+                409,
+                "MOVE_REQUEST_EXPIRED",
+                "That move request expired before it was answered.",
+            )
+
+    def decline_lesson_move(self, request_id: int, reason: str | None) -> LessonMoveRequest:
+        """Turn a pending request down, keeping it as an answer the student sees.
+
+        Nothing about the lesson changes -- not `starts_at`, not `status`, not
+        `seq`. The request row stops being pending, which is what frees the slot
+        it was holding and lets the student ask again; the row itself stays, so
+        the student is told what happened instead of watching it vanish.
+
+        Unconditional by design: there is no slot-availability recheck, because
+        declining takes nothing.
+        """
+        with self._lock, self._sessions.begin() as session:
+            request = session.get(LessonMoveRequestRecord, request_id)
+            if request is None:
+                raise StoreError(404, "NOT_FOUND", "Move request not found.")
+            self._refuse_if_already_resolved(request)
+            request.status = MoveRequestStatus.DECLINED.value
+            request.decline_reason = reason
+            request.resolved_at = clock.now()
+            session.flush()
+            return self._move_request_model(request)
+
     def approve_lesson_move(self, request_id: int) -> Lesson:
         try:
             with self._lock, self._sessions.begin() as session:
                 request = session.get(LessonMoveRequestRecord, request_id)
                 if request is None:
                     raise StoreError(404, "NOT_FOUND", "Move request not found.")
+                # Before the slot recheck, not after. A request that has already
+                # been answered -- declined, or swept to `expired` by the sweep
+                # this endpoint just ran -- has nothing left to approve, and
+                # saying so beats the SLOT_TAKEN the recheck used to produce,
+                # which pointed at the wrong problem entirely.
+                self._refuse_if_already_resolved(request)
                 lesson = session.get(LessonRecord, request.lesson_id)
                 if lesson is None:
                     session.delete(request)
@@ -726,10 +888,17 @@ class DatabaseStore:
                 # A pause never silently cancels a move request: the student
                 # would watch it vanish without an answer. The teacher approves
                 # or declines it, then the break can be taken.
+                # Pending only, for the same reason everywhere else in this
+                # file: an answered request is history. Declining is what clears
+                # this gate, which is the point -- #12 blocks the break until the
+                # request has an answer, and now there are two ways to give one.
                 pending = session.scalar(
                     select(LessonMoveRequestRecord.id)
                     .join(LessonRecord, LessonRecord.id == LessonMoveRequestRecord.lesson_id)
-                    .where(LessonRecord.student_id == student.id)
+                    .where(
+                        LessonRecord.student_id == student.id,
+                        LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
+                    )
                     .limit(1)
                 )
                 if pending is not None:
@@ -806,14 +975,55 @@ class DatabaseStore:
                 resumed += 1
             return resumed
 
+    def expire_stale_move_requests(self) -> int:
+        """End every pending request time has overtaken, and return how many.
+
+        A pending request is stale once either end of it is in the past: the
+        time it asked for has arrived, or the lesson it wanted to move is no
+        longer scheduled -- swept to `done` by `complete_due_lessons`, or marked
+        done early by the teacher. Approving either one would move a lesson to a
+        time that has already been and gone.
+
+        Expired rather than deleted, for the same reason a decline is kept: the
+        student gets an answer. It is the identical catch-up-on-read shape as
+        `complete_due_lessons` -- same clock, same call sites, same single-writer
+        lock -- and idempotent for the same reason, since a row that is already
+        `expired` no longer matches "stale *pending*". A declined or expired row
+        is never re-evaluated; once answered, a request keeps the answer it got.
+        """
+        now = clock.now()
+        with self._lock, self._sessions.begin() as session:
+            stale = session.scalars(
+                select(LessonMoveRequestRecord)
+                .join(LessonRecord, LessonRecord.id == LessonMoveRequestRecord.lesson_id)
+                .where(
+                    LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value,
+                    or_(
+                        LessonMoveRequestRecord.requested_starts_at <= now,
+                        LessonRecord.status != LessonStatus.SCHEDULED.value,
+                    ),
+                )
+                .order_by(LessonMoveRequestRecord.id)
+            ).all()
+            for request in stale:
+                request.status = MoveRequestStatus.EXPIRED.value
+                request.resolved_at = now
+            return len(stale)
+
     def catch_up(self) -> None:
         """Everything the clock has quietly made true since the last read.
 
-        The read endpoints call this single method so the two catch-ups cannot
-        drift apart: lessons whose time has passed are completed, and breaks
-        that have run out are lifted.
+        The read endpoints call this single method so the catch-ups cannot drift
+        apart: lessons whose time has passed are completed, move requests time
+        has overtaken are expired, and breaks that have run out are lifted.
+
+        The order matters in one place. Completing lessons runs first so that a
+        lesson which just went `done` is seen as done by the move-request sweep
+        in the same pass, rather than leaving its request pending until the next
+        read.
         """
         self.complete_due_lessons()
+        self.expire_stale_move_requests()
         self.expire_due_pauses()
 
     def set_hours(self, day: int, times: list[str]) -> None:
@@ -892,39 +1102,120 @@ class DatabaseStore:
         monday = self._monday(datetime.now(STUDIO_TZ).date()) + timedelta(weeks=1)
         return monday + timedelta(days=student.slot_day - 1)
 
+    def _weekly_lesson_dates(
+        self,
+        session: Session,
+        student: StudentRecord,
+        *,
+        count: int,
+        first_seq: int,
+        first_date: date,
+    ) -> list[datetime]:
+        """`count` open instants on the student's weekly slot, one per week.
+
+        The only place in this store where a weekly slot and a lesson count
+        become dates (#11). Opening a package and topping one up both come
+        through here, so neither can grow its own idea of where lessons land --
+        and because it returns dates instead of writing them, a preview can run
+        the real thing and create nothing.
+
+        `first_date` is the caller's anchor -- next week's slot for a fresh
+        package, the week after the last existing lesson for a top-up -- and is
+        only ever a *candidate*. Nothing below trusts a nominal date:
+
+        - The slot has to be in the availability grid at all. If it is not, the
+          call is refused with `WEEKLY_SLOT_NOT_AVAILABLE` before a single date
+          is computed, never mind written. Availability is a (weekday, time)
+          pair, so one check settles every week of the series.
+        - A blocked candidate rolls forward a week at a time until it is not
+          blocked, for that one lesson. `_blocked_instants` is what decides,
+          the same way it decides for the student's booking grid. The first
+          lesson of a series is treated exactly like the tenth; there is no
+          "only later lessons move" case.
+        - Lesson *n*'s candidate is lesson *n-1*'s **placed** date plus a week,
+          not its nominal one. So one skip carries the whole tail of the series
+          with it, in step, and the student still gets exactly `count` lessons.
+        - The per-lesson roll-forward is bounded by `PLACEMENT_SEARCH_WEEKS`.
+          Past it the call fails with `NO_OPEN_SLOT_FOUND`, naming the student
+          and the `seq` that could not be placed. Since nothing is written until
+          the whole list is back in the caller's hands, that failure leaves no
+          package and no lessons behind.
+        """
+        in_grid = session.scalar(
+            select(func.count())
+            .select_from(AvailabilitySlotRecord)
+            .where(
+                AvailabilitySlotRecord.weekday == student.slot_day,
+                AvailabilitySlotRecord.local_time == student.slot_time,
+            )
+        )
+        if not in_grid:
+            day = WEEKDAY_NAMES.get(student.slot_day, f"weekday {student.slot_day}")
+            raise StoreError(
+                409,
+                "WEEKLY_SLOT_NOT_AVAILABLE",
+                f"{student.name}'s weekly slot, {day} at {student.slot_time}, is not one of "
+                "the teacher's available hours. Add it to the availability grid, or move the "
+                "student to a slot that is on it, before selling lessons.",
+            )
+        blocked = self._blocked_instants(session)
+        placed: list[datetime] = []
+        candidate = first_date
+        for offset in range(count):
+            for week in range(PLACEMENT_SEARCH_WEEKS):
+                # Recombined with the local time each week rather than by adding
+                # to an instant, so the series keeps its wall-clock time across a
+                # daylight-saving change.
+                starts_at = self._at(candidate + timedelta(weeks=week), student.slot_time)
+                if starts_at not in blocked:
+                    break
+            else:
+                seq = first_seq + offset
+                raise StoreError(
+                    409,
+                    "NO_OPEN_SLOT_FOUND",
+                    f"Lesson {seq} for {student.name} could not be placed: their "
+                    f"{student.slot_time} slot is taken or blacked out every week for "
+                    f"{PLACEMENT_SEARCH_WEEKS} weeks from {candidate.isoformat()}. "
+                    "Nothing was created.",
+                )
+            # Hold the instant against the rest of this same run, and carry on
+            # from where the lesson actually landed rather than from where it was
+            # nominally due.
+            blocked.add(starts_at)
+            placed.append(starts_at)
+            candidate = self._studio(starts_at).date() + timedelta(weeks=1)
+        return placed
+
     def _place_weekly_lessons(
         self,
         session: Session,
         student: StudentRecord,
         package_id: int,
         *,
-        count: int,
         first_seq: int,
-        first_date: date,
+        starts_ats: list[datetime],
     ) -> None:
-        """`count` lessons, one per week, from `first_date` on the weekly slot.
+        """Write `starts_ats` out as consecutive lessons from `first_seq` on.
 
-        The only place lesson dates are generated, used both by opening a
-        package and by renewing one, so the two cannot drift apart. It is
-        blackout- and availability-blind on purpose: a generated date can land
-        on a blackout or outside the grid, exactly as it does today. Fixing that
-        is #11, and fixing it here fixes it for both callers at once.
+        Deliberately separate from `_weekly_lesson_dates`: working out where
+        lessons go and writing them down are different jobs, and only the second
+        touches the database. That split is the whole reason a preview can be
+        trusted -- it runs the first half and stops.
         """
-        for index in range(count):
-            self._add_lesson_record(
-                session,
-                student.id,
-                package_id,
-                first_seq + index,
-                self._at(first_date + timedelta(weeks=index), student.slot_time),
-            )
+        for offset, starts_at in enumerate(starts_ats):
+            self._add_lesson_record(session, student.id, package_id, first_seq + offset, starts_at)
 
-    def _open_package_record(
-        self,
-        session: Session,
-        student: StudentRecord,
-        size: int,
-    ) -> None:
+    def _open_package_dates(
+        self, session: Session, student: StudentRecord, size: int
+    ) -> list[datetime]:
+        """Every decision opening a fresh package makes, and none of its writes.
+
+        Split out so the preview endpoint and the real call are literally the
+        same code path up to the point of writing (#11): the refusals below and
+        the dates that come back are identical either way, in the same order, so
+        a dialog can never promise something the confirm does not do.
+        """
         scheduled = session.scalar(
             select(func.count())
             .select_from(LessonRecord)
@@ -935,6 +1226,24 @@ class DatabaseStore:
         )
         if scheduled:
             raise StoreError(409, "PACKAGE_OPEN", "This student already has scheduled lessons.")
+        return self._weekly_lesson_dates(
+            session,
+            student,
+            count=size,
+            first_seq=1,
+            first_date=self._fresh_package_anchor(student),
+        )
+
+    def _open_package_record(
+        self,
+        session: Session,
+        student: StudentRecord,
+        size: int,
+    ) -> None:
+        # Dates first, package row second. Placement is what can refuse this
+        # call, and refusing before anything is added is what keeps the failure
+        # clean rather than relying on the rollback to tidy up after it.
+        starts_ats = self._open_package_dates(session, student, size)
         current_package = self._current_package(session, student.id)
         package = PackageRecord(
             student_id=student.id,
@@ -946,13 +1255,22 @@ class DatabaseStore:
         session.add(package)
         session.flush()
         self._place_weekly_lessons(
-            session,
-            student,
-            package.id,
-            count=size,
-            first_seq=1,
-            first_date=self._fresh_package_anchor(student),
+            session, student, package.id, first_seq=1, starts_ats=starts_ats
         )
+
+    def preview_open_package(self, student_id: int, size: int) -> PackagePreview:
+        """The dates `open_package` would create, without creating them.
+
+        The real call with the writes left off -- same guard, same anchor, same
+        placement function -- which is what makes the admin's confirm dialog
+        trustworthy (#11). The session is deliberately `self._sessions()` and not
+        `.begin()`, so nothing here can commit even by accident.
+        """
+        with self._sessions() as session:
+            student = self._student_record(session, student_id)
+            return PackagePreview(
+                size=size, dates=self._open_package_dates(session, student, size)
+            )
 
     def open_package(self, student_id: int, size: int) -> None:
         try:
@@ -986,36 +1304,12 @@ class DatabaseStore:
         try:
             with self._lock, self._sessions.begin() as session:
                 student = self._student_record(session, student_id)
-                package = self._current_package(session, student.id)
-                last = session.scalar(
-                    select(LessonRecord)
-                    .where(LessonRecord.package_id == package.id)
-                    .order_by(LessonRecord.starts_at.desc())
-                    .limit(1)
+                # Dates before writes, for the same reason opening a package
+                # works that way: placement is what refuses, and it refuses
+                # before `size` has been touched.
+                package, highest_seq, starts_ats = self._renew_package_plan(
+                    session, student, size
                 )
-                highest_seq = (
-                    session.scalar(
-                        select(func.max(LessonRecord.seq)).where(
-                            LessonRecord.package_id == package.id
-                        )
-                    )
-                    or 0
-                )
-                # The day after the package's last lesson, done or scheduled --
-                # a renewal continues the schedule rather than restarting it. A
-                # package that never got any lessons (opened at student creation
-                # and never populated) starts where a fresh one would.
-                if last is None:
-                    earliest = self._fresh_package_anchor(student)
-                else:
-                    earliest = self._studio(last.starts_at).date() + timedelta(days=1)
-                # Never inside a break. #12's forward shift already pushed the
-                # scheduled lessons past `ends_on`, so this only bites when the
-                # package has no lessons left to follow -- but it is the real
-                # pause date either way, not an approximation of one.
-                paused_until = self._paused_until(session, student)
-                if paused_until is not None and paused_until > earliest:
-                    earliest = paused_until
                 package.size += size
                 # The package is no longer finished, so whatever invoice was
                 # sent for it does not cover it. It goes back on the list.
@@ -1024,14 +1318,74 @@ class DatabaseStore:
                     session,
                     student,
                     package.id,
-                    count=size,
                     first_seq=highest_seq + 1,
-                    first_date=self._next_weekly_slot_date(earliest, student.slot_day),
+                    starts_ats=starts_ats,
                 )
         except IntegrityError as error:
             raise StoreError(
                 409, "SLOT_TAKEN", "A generated lesson time is already booked."
             ) from error
+
+    def _renew_package_plan(
+        self, session: Session, student: StudentRecord, size: int
+    ) -> tuple[PackageRecord, int, list[datetime]]:
+        """The package a top-up extends, the `seq` it carries on from, its dates.
+
+        Every decision `renew_package` makes and none of its writes, so the
+        top-up preview is the top-up call minus the persistence -- and, more to
+        the point of #11, so the top-up's placement is `_weekly_lesson_dates`
+        rather than a second copy of it. #13 shipped this path blackout-blind on
+        the explicit promise that it would start sharing the fix; this is where
+        it does.
+        """
+        package = self._current_package(session, student.id)
+        last = session.scalar(
+            select(LessonRecord)
+            .where(LessonRecord.package_id == package.id)
+            .order_by(LessonRecord.starts_at.desc())
+            .limit(1)
+        )
+        highest_seq = (
+            session.scalar(
+                select(func.max(LessonRecord.seq)).where(LessonRecord.package_id == package.id)
+            )
+            or 0
+        )
+        # The day after the package's last lesson, done or scheduled -- a
+        # renewal continues the schedule rather than restarting it. A package
+        # that never got any lessons (opened at student creation and never
+        # populated) starts where a fresh one would.
+        if last is None:
+            earliest = self._fresh_package_anchor(student)
+        else:
+            earliest = self._studio(last.starts_at).date() + timedelta(days=1)
+        # Never inside a break. #12's forward shift already pushed the scheduled
+        # lessons past `ends_on`, so this only bites when the package has no
+        # lessons left to follow -- but it is the real pause date either way, not
+        # an approximation of one.
+        paused_until = self._paused_until(session, student)
+        if paused_until is not None and paused_until > earliest:
+            earliest = paused_until
+        starts_ats = self._weekly_lesson_dates(
+            session,
+            student,
+            count=size,
+            first_seq=highest_seq + 1,
+            first_date=self._next_weekly_slot_date(earliest, student.slot_day),
+        )
+        return package, highest_seq, starts_ats
+
+    def preview_renew_package(self, student_id: int, size: int) -> PackagePreview:
+        """The dates `renew_package` would append, without appending them.
+
+        Read-only session, and `_renew_package_plan` writes nothing, so the
+        `size` bump and the lesson rows the real call makes simply do not happen
+        here.
+        """
+        with self._sessions() as session:
+            student = self._student_record(session, student_id)
+            _, _, dates = self._renew_package_plan(session, student, size)
+            return PackagePreview(size=size, dates=dates)
 
     def mark_invoiced(self, package_id: int) -> None:
         """Record that the invoice for this package went out. Nothing else.
@@ -1199,9 +1553,18 @@ class DatabaseStore:
     def list_move_requests(
         self,
     ) -> list[tuple[Student, Lesson, LessonMoveRequest]]:
+        """The move requests still waiting for an answer, for the alerts queue.
+
+        Pending only. A declined or expired request needs nothing further from
+        the teacher, and it used to leave this list by being deleted; now that
+        it survives, the filter is what takes its place. Without it the alerts
+        page would accumulate every request ever answered.
+        """
         with self._sessions() as session:
             requests = session.scalars(
-                select(LessonMoveRequestRecord).order_by(
+                select(LessonMoveRequestRecord)
+                .where(LessonMoveRequestRecord.status == MoveRequestStatus.PENDING.value)
+                .order_by(
                     LessonMoveRequestRecord.requested_starts_at,
                     LessonMoveRequestRecord.id,
                 )

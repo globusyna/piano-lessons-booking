@@ -15,10 +15,20 @@ export type Lesson = {
   status: "scheduled" | "done";
 };
 
+/** How a move request ended, or that it has not.
+ *
+ * Only "pending" blocks anything or asks the teacher for an answer. A declined
+ * or expired request is history the student is shown, so anywhere that used to
+ * test `moveRequest !== null` has to test this instead. */
+export type MoveRequestStatus = "pending" | "declined" | "expired";
+
 export type LessonMoveRequest = {
   id: number;
   lessonId: number;
   requestedStartsAt: string;
+  status: MoveRequestStatus;
+  declineReason: string | null;
+  resolvedAt: string | null;
 };
 
 export type Student = {
@@ -41,7 +51,11 @@ export type StudentLesson = {
   startsAt: string;
   status: "scheduled" | "done";
   canMove: boolean;
+  /** Set only while a request is pending. */
   requestedStartsAt: string | null;
+  /** Set only once a request has been answered. */
+  moveRequestStatus: "declined" | "expired" | null;
+  declineReason: string | null;
 };
 
 export type StudentView = {

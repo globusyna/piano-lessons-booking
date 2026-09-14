@@ -13,9 +13,11 @@ the API hands back, never written down.
 
 The seeded studio holds 15:30 on Monday, 16:15 and 18:30 on Tuesday, 17:00 on
 Wednesday, 14:45 on Thursday and 17:45 on Friday. Students made here take 14:00,
-which is free on every day, because `lessons.starts_at` is unique across the
+which no seeded student sits on, because `lessons.starts_at` is unique across the
 whole studio and a clash would be a slot collision rather than the behaviour
-under test.
+under test. The exception is Monday, whose *availability* starts at 14:45 (#11
+refuses a weekly slot that is not on the grid at all), so the two Monday students
+below take 14:45 -- also free of seeded lessons.
 """
 
 from datetime import datetime, timedelta
@@ -183,7 +185,8 @@ def test_renewing_a_finished_package_starts_the_lessons_running_again(
 def test_renewing_a_paused_students_package_keeps_the_lessons_out_of_the_break(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:
-    student_id = _create_student(client, admin_headers, "On A Break", 1, size=5)
+    # 14:45, not 14:00: Monday's availability starts there. See the module note.
+    student_id = _create_student(client, admin_headers, "On A Break", 1, "14:45", size=5)
     paused = client.post(
         f"/admin/students/{student_id}/pause", json={"weeks": 3}, headers=admin_headers
     )
@@ -268,10 +271,22 @@ def test_a_size_that_is_not_on_the_price_list_is_refused(
     assert len(after["lessons"]) == 5
 
 
-def test_a_generated_time_that_is_already_booked_is_refused(
+def test_a_generated_time_that_is_already_booked_rolls_the_series_forward(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:
-    """The same 409 opening a package gives, and nothing is half-applied."""
+    """What #13 refused with `SLOT_TAKEN`, #11 places instead.
+
+    #13 settled this here rather than in itself: its out-of-scope note kept
+    top-up placement on the shared helper precisely so "whatever #11 changes
+    there is inherited by top-ups too". #11 changed it. A Friday 14:00 the
+    holder is sitting on no longer refuses the newcomer's top-up -- it rolls past
+    it a week at a time, and the newcomer still gets exactly the five lessons
+    that were bought. Nothing of the holder's moves.
+
+    The `SLOT_TAKEN` translation stays in the store for the genuine race, two
+    inserts meeting on one unique `starts_at`, which no single request can reach
+    by itself any more.
+    """
     holder = _create_student(client, admin_headers, "Holds The Slot", 5, "14:00", size=10)
     # No lessons of their own, so the renewal falls back to the fresh-package
     # anchor -- next week's Friday 14:00, which the student above is sitting on.
@@ -279,19 +294,25 @@ def test_a_generated_time_that_is_already_booked_is_refused(
 
     renewed = _renew(client, admin_headers, newcomer, 5)
     after = _detail(client, admin_headers, newcomer)
+    held = _times(_detail(client, admin_headers, holder)["lessons"])
+    placed = _times(after["lessons"])
 
-    assert renewed.status_code == 409
-    assert renewed.json()["error"]["code"] == "SLOT_TAKEN"
-    assert after["student"]["pkg"]["size"] == 10
-    assert after["lessons"] == []
-    assert len(_detail(client, admin_headers, holder)["lessons"]) == 10
+    assert renewed.status_code == 200
+    assert after["student"]["pkg"]["size"] == 15
+    assert len(placed) == 5
+    assert len(held) == 10
+    # Clear of every one of the holder's ten, and carrying on from the week after
+    # the last of them rather than skipping further than it had to.
+    assert not set(placed) & set(held)
+    assert placed[0] - max(held) == timedelta(weeks=1)
+    assert [(when - placed[0]).days for when in placed] == [0, 7, 14, 21, 28]
 
 
 def test_marking_an_invoice_sent_no_longer_opens_the_next_package(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:
     """It flags the invoice. Selling more lessons is now a separate decision."""
-    student_id = _create_student(client, admin_headers, "Invoice Only", 1, size=5)
+    student_id = _create_student(client, admin_headers, "Invoice Only", 1, "14:45", size=5)
     _finish_the_package(client, admin_headers, student_id)
     before = _detail(client, admin_headers, student_id)
     rows_before = _package_rows(student_id)
