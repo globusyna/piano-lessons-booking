@@ -9,6 +9,7 @@ from ..models import (
     DeclineMoveRequestBody,
     PackageRequest,
     PauseRequest,
+    PurchasableSize,
     StatusRequest,
     StudentCreate,
     StudentSlotRequest,
@@ -124,6 +125,30 @@ def renew_student_package(student_id: int, body: PackageRequest) -> dict:
     """
     store.renew_package(student_id, body.size)
     return {"ok": True}
+
+
+@router.get("/students/{student_id}/package/preview")
+def preview_student_package(student_id: int, size: PurchasableSize) -> dict:
+    """The dates opening a package would put on the calendar, creating nothing.
+
+    A GET, because it changes nothing: the store runs the real generation path
+    and stops short of writing (#11). Which means a refusal arrives here as a
+    refusal -- an unavailable weekly slot, a slot with no opening inside the
+    search bound, a student who already has lessons -- so the admin is told
+    before there is a confirm button to press, not after.
+
+    `size` is validated against the same price list `PackageRequest` enforces,
+    so a preview cannot be taken for a size the POST would reject.
+    """
+    store.catch_up()
+    return {"preview": store.preview_open_package(student_id, size)}
+
+
+@router.get("/students/{student_id}/package/renew/preview")
+def preview_student_package_renewal(student_id: int, size: PurchasableSize) -> dict:
+    """The dates a top-up would append, appending nothing. Sibling of the above."""
+    store.catch_up()
+    return {"preview": store.preview_renew_package(student_id, size)}
 
 
 @router.post("/students/{student_id}/pause")
