@@ -84,12 +84,34 @@ Send the returned `accessToken` as `Authorization: Bearer <token>` when calling 
 endpoints. Student routes use the personal token in the URL; seeded examples include
 `http://127.0.0.1:8000/s/anna`, `/s/jonas`, and `/s/mira`.
 
-For anything beyond local development, set a private JWT signing secret before starting the API:
+### The JWT signing secret
+
+Admin tokens are signed with `PIANO_JWT_SECRET`. The backend resolves it while it is being
+imported, before the API object is built and before the server binds a port, so a missing or
+unusable secret fails immediately rather than on the first login. There are three outcomes:
+
+- **`PIANO_JWT_SECRET` is set to a usable value** - it is used as the signing key. A usable value
+  is non-blank and **at least 32 characters** long. An explicitly set secret always wins, even
+  when `PIANO_DEV_MODE=1` is also set.
+- **`PIANO_JWT_SECRET` is unset and `PIANO_DEV_MODE=1`** - the backend generates a random secret
+  for that process and prints one line to stderr saying so. The value itself is never logged.
+  Admin tokens stop working at the next restart, because the next run generates a new secret.
+  This is what `make backend`, `make run`, `make test` and `uv run pytest` do, so a clean checkout
+  needs no setup.
+- **Neither is set** - the backend refuses to start. It prints a message to stderr naming
+  `PIANO_JWT_SECRET` and both ways forward, and exits non-zero. The same refusal applies when
+  `PIANO_JWT_SECRET` is set but blank, whitespace-only, or shorter than 32 characters.
+
+The 32-character minimum is a floor against placeholder and obviously short secrets. It is not a
+guarantee of entropy - generate the value from a cryptographic random source:
 
 ```sh
-export PIANO_JWT_SECRET='replace-with-a-long-random-secret'
+export PIANO_JWT_SECRET="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 make backend
 ```
+
+Keep the secret out of version control. Rotating it invalidates every admin token signed with the
+previous value.
 
 The backend persists data in `./piano.db` by default. Set `PIANO_DATABASE_URL` to choose another
 SQLAlchemy database URL:

@@ -251,7 +251,7 @@ off by default.
 ### B-30 · The JWT secret has a working default — #22
 **Size:** S
 
-`JWT_SECRET = os.getenv("PIANO_JWT_SECRET", "local-development-secret-change-me")`
+`JWT_SECRET` fell back to a hardcoded development string when `PIANO_JWT_SECRET` was unset
 (`backend/auth.py:14`). A deployment that forgets the variable accepts admin tokens minted by
 anyone who has read this repository. The runbook mentions setting it; nothing enforces it.
 
