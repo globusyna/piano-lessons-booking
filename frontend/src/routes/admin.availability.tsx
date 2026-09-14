@@ -71,7 +71,9 @@ function AvailabilityPage() {
                     type="button"
                     onClick={() => toggle(day, t)}
                     className={`tnum border px-2 py-1 text-xs ${
-                      on ? "border-felt bg-felt text-felt-foreground" : "border-border text-slate"
+                      on
+                        ? "border-felt bg-felt text-felt-foreground"
+                        : "border-border bg-muted text-slate"
                     }`}
                   >
                     {t}
