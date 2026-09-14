@@ -1,0 +1,88 @@
+# Runs the equivalent of `make check` (backend tests, frontend lint, frontend
+# production build) on every pull request against master and every push to
+# master, so the result is visible on the PR without anyone running it locally.
+name: check
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # `backend` and `frontend` are deliberately independent: neither declares
+  # `needs:`, so a frontend-only change gets a lint/build result without
+  # waiting on the backend suite, and vice versa.
+  backend:
+    name: backend (make test)
+    runs-on: ubuntu-latest
+    env:
+      # Matches `requires-python = ">=3.12"` in pyproject.toml. Without this,
+      # uv is free to resolve the environment onto any newer interpreter.
+      UV_PYTHON: "3.12"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install backend dependencies
+        # --locked, not a plain `uv sync`: a stale uv.lock fails the job here
+        # instead of being silently rewritten inside CI.
+        run: uv sync --locked
+
+      - name: Run the backend test suite
+        run: make test
+
+  frontend:
+    name: frontend (make lint, make build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install Node from frontend/.nvmrc
+        # The version is read from frontend/.nvmrc and is deliberately written
+        # nowhere in this workflow. One Node release carries a
+        # Buffer.from(str, "hex") defect that breaks the production build with
+        # the misleading `css content for "" was not found` (diagnosed in full
+        # on PR #61); CI drifting onto a different Node than developers use
+        # would reopen that class of bug with no diagnosis left behind.
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        # `npm ci`, not `npm install`: a stale package-lock.json fails the job
+        # instead of being silently updated. No --ignore-scripts, so the
+        # `prebuild` guard (scripts/check-node-buffer.mjs) still runs below.
+        run: npm ci
+        working-directory: frontend
+
+      - name: Lint the frontend
+        run: make lint
+
+      - name: Build the frontend for production
+        # Goes through `npm run build`, never `vite build` directly, so npm
+        # fires the existing `prebuild` hook (`npm run check:node`) and CI gets
+        # the same Node-defect guard a local `make build` gets. Build output is
+        # intentionally neither cached nor uploaded - nothing consumes it.
+        run: make build
