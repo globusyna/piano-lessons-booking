@@ -15,9 +15,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { pianoKeys } from "@/hooks/use-piano-store";
+import { pianoKeys, useAvailability } from "@/hooks/use-piano-store";
 import { api, errorMessage } from "@/lib/api-client";
-import { dateKey, fmt, weekStart } from "@/lib/piano-data";
+import { dateKey, fmt, weekStart, weekdayOf } from "@/lib/piano-data";
 
 export const Route = createFileRoute("/admin/")({
   component: WeekView,
@@ -42,6 +42,16 @@ function WeekView() {
     } catch (error) {
       toast.error(errorMessage(error));
     }
+  };
+
+  // The week grid shows every ROW_TIME, so a time the teacher never works looks
+  // the same as one that is genuinely free. Grey those out. While availability
+  // is loading or failed, nothing is greyed rather than everything.
+  const availability = useAvailability();
+  const closedAt = (date: string, time: string) => {
+    const hours = availability.data?.hours;
+    if (!hours) return false;
+    return !(hours[weekdayOf(date)] ?? []).includes(time);
   };
 
   const approveMoveRequest = async (requestId: number) => {
@@ -88,6 +98,7 @@ function WeekView() {
         ) : (
           <TimeGrid
             days={week.data}
+            isClosed={(day, time) => closedAt(day.date, time)}
             renderLesson={(cell, chip) => (
               <Popover>
                 <PopoverTrigger className="h-full w-full cursor-pointer">{chip}</PopoverTrigger>
@@ -155,7 +166,7 @@ function WeekView() {
       </div>
 
       <p className="mt-4 text-xs text-slate">
-        Felt = booked lesson. Tinted = blackout. Empty = open.
+        Felt = booked lesson. Tinted = blackout. Grey = outside your weekly hours. Empty = open.
       </p>
 
       <AlertDialog open={!!pendingRemove} onOpenChange={(o) => !o && setPendingRemove(null)}>
