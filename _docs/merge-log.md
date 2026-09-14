@@ -14,6 +14,7 @@ it were built on a tree that never passed.
 | 6 | [#11 B-03 Generation respects blackouts](https://github.com/globusyna/piano-lessons-booking/issues/11) | `codex/b-03` | [#58](https://github.com/globusyna/piano-lessons-booking/pull/58) | `codex/b-11` | PASS | backend PASS, frontend pre-existing FAIL (#54) |
 | 7 | [#22 B-30 JWT secret has a working default](https://github.com/globusyna/piano-lessons-booking/issues/22) | `codex/b-30` | [#60](https://github.com/globusyna/piano-lessons-booking/pull/60) | `codex/b-03` | PASS | backend PASS, frontend pre-existing FAIL (#54) |
 | 8 | [#54 B-61 Frontend build is broken](https://github.com/globusyna/piano-lessons-booking/issues/54) | `codex/b-61` | [#61](https://github.com/globusyna/piano-lessons-booking/pull/61) | `codex/b-30` | PASS | **PASS end to end** (first green `make check` of the run) |
+| 9 | [#35 B-54 Nothing runs `make check`](https://github.com/globusyna/piano-lessons-booking/issues/35) | `codex/b-54` | [#64](https://github.com/globusyna/piano-lessons-booking/pull/64) | `codex/b-61` | PASS | PASS end to end, and now also in CI (run 34781060543) |
 
 **Note on #10 (row 5):** PR #57 merged into `codex/b-11` moments *after* `codex/b-11`
 merged to `master`, so that work never reached `master` and #10 stayed open.
