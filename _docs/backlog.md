@@ -1,12 +1,70 @@
 # Backlog
 
 Improvement tasks derived from a review of the repository at commit `8ced983`.
+The descriptions below preserve the findings from that review; they are not a live description of
+the code on `master`. GitHub issues are the source of truth for current status and acceptance
+criteria.
 
 Each task is sized (S = under half a day, M = about a day, L = multi-day) and lists its
-dependencies. Nothing here has been implemented — this document is for review and
-prioritisation. Tick a task off by linking the PR that closed it.
+dependencies. Completed work is linked below rather than rewriting the original finding.
 
-**Suggested order:** B-53 (#34) → B-20 (#15) → B-01 (#9) → B-10 (#12) → B-11 (#13) → B-02 (#10) → B-03 (#11) → B-30 (#22) → B-54 (#35) → the rest.
+## Current status
+
+Last reconciled with GitHub on 2026-10-06.
+
+### Completed from the original backlog
+
+| Task | Issue | Pull request |
+|------|-------|--------------|
+| B-20 · Add migrations | [#15](https://github.com/globusyna/piano-lessons-booking/issues/15) | [#46](https://github.com/globusyna/piano-lessons-booking/pull/46) |
+| B-01 · Complete lessons and consume packages | [#9](https://github.com/globusyna/piano-lessons-booking/issues/9) | [#49](https://github.com/globusyna/piano-lessons-booking/pull/49) |
+| B-10 · Pause a student | [#12](https://github.com/globusyna/piano-lessons-booking/issues/12) | [#50](https://github.com/globusyna/piano-lessons-booking/pull/50) |
+| B-11 · Top up a package | [#13](https://github.com/globusyna/piano-lessons-booking/issues/13) | [#55](https://github.com/globusyna/piano-lessons-booking/pull/55) |
+| B-02 · Decline a move request | [#10](https://github.com/globusyna/piano-lessons-booking/issues/10) | [#59](https://github.com/globusyna/piano-lessons-booking/pull/59) |
+| B-03 · Respect blackouts and availability | [#11](https://github.com/globusyna/piano-lessons-booking/issues/11) | [#58](https://github.com/globusyna/piano-lessons-booking/pull/58) |
+| B-30 · Require a JWT secret | [#22](https://github.com/globusyna/piano-lessons-booking/issues/22) | [#60](https://github.com/globusyna/piano-lessons-booking/pull/60) |
+| B-54 · Run `make check` in CI | [#35](https://github.com/globusyna/piano-lessons-booking/issues/35) | [#64](https://github.com/globusyna/piano-lessons-booking/pull/64) |
+
+B-53's acceptance criteria are also satisfied by
+[PR #41](https://github.com/globusyna/piano-lessons-booking/pull/41): `_docs/process.md` and
+`_docs/testing-guidelines.md` both exist. [Issue #34](https://github.com/globusyna/piano-lessons-booking/issues/34)
+remains open for the repository owner to close.
+
+### Active and recommended order
+
+1. Review and merge [PR #71](https://github.com/globusyna/piano-lessons-booking/pull/71) for
+   [B-67 / #70](https://github.com/globusyna/piano-lessons-booking/issues/70). It has QA PASS and
+   green CI.
+2. Complete the repository-admin setting in [#62](https://github.com/globusyna/piano-lessons-booking/issues/62)
+   so a failing CI check blocks merges to `master`.
+3. Fix [B-64 / #66](https://github.com/globusyna/piano-lessons-booking/issues/66), because the
+   current workflow skips stacked PRs even though `_docs/process.md` requires stacked branches.
+4. Fix [B-65 / #67](https://github.com/globusyna/piano-lessons-booking/issues/67) so local and CI
+   development use the same Python version.
+5. Resume product work with [B-12 / #14](https://github.com/globusyna/piano-lessons-booking/issues/14),
+   grooming how archive state interacts with the single-status limitation in
+   [B-60 / #51](https://github.com/globusyna/piano-lessons-booking/issues/51).
+
+### Follow-up issues created after the original review
+
+| Task | Issue | State on 2026-10-06 |
+|------|-------|---------------------|
+| B-01 follow-up · Real nightly completion job | [#43](https://github.com/globusyna/piano-lessons-booking/issues/43) | Open |
+| Lesson cancellation status and audit trail | [#44](https://github.com/globusyna/piano-lessons-booking/issues/44) | Open |
+| B-10b · Reclaim a paused student's slot | [#45](https://github.com/globusyna/piano-lessons-booking/issues/45) | Open |
+| B-59 · Reject partially-created pre-Alembic databases | [#47](https://github.com/globusyna/piano-lessons-booking/issues/47) | Open |
+| Preserve declined move-request state and reason | [#48](https://github.com/globusyna/piano-lessons-booking/issues/48) | Open |
+| B-60 · Separate paused and flagged state | [#51](https://github.com/globusyna/piano-lessons-booking/issues/51) | Open |
+| B-03b · Reconcile blackouts added later | [#52](https://github.com/globusyna/piano-lessons-booking/issues/52) | Open |
+| B-10c · Avoid blackouts while shifting pauses | [#53](https://github.com/globusyna/piano-lessons-booking/issues/53) | Open |
+| B-61 · Repair the frontend production build | [#54](https://github.com/globusyna/piano-lessons-booking/issues/54) | Completed by [PR #61](https://github.com/globusyna/piano-lessons-booking/pull/61) |
+| B-62 · Make migration schema tests batch-safe | [#56](https://github.com/globusyna/piano-lessons-booking/issues/56) | Open |
+| Require CI checks on `master` | [#62](https://github.com/globusyna/piano-lessons-booking/issues/62) | Open; repository-admin action |
+| B-63 · Repair `npm run preview` | [#63](https://github.com/globusyna/piano-lessons-booking/issues/63) | Open |
+| B-64 · Run CI on stacked and retargeted PRs | [#66](https://github.com/globusyna/piano-lessons-booking/issues/66) | Open |
+| B-65 · Pin one Python version locally and in CI | [#67](https://github.com/globusyna/piano-lessons-booking/issues/67) | Open |
+| B-66 · Grey unavailable slots in weekly hours | [#68](https://github.com/globusyna/piano-lessons-booking/issues/68) | Completed by [PR #69](https://github.com/globusyna/piano-lessons-booking/pull/69) |
+| B-67 · Grey closed hours in the week calendar | [#70](https://github.com/globusyna/piano-lessons-booking/issues/70) | QA PASS; [PR #71](https://github.com/globusyna/piano-lessons-booking/pull/71) ready for review |
 
 ---
 
