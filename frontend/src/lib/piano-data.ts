@@ -116,6 +116,12 @@ function fromDateKey(value: string) {
   return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
+// 1 = Monday … 7 = Sunday, matching the weekday numbering the availability API
+// uses. Goes through fromDateKey so the timezone trap above is handled once.
+export function weekdayOf(value: string) {
+  return ((fromDateKey(value).getDay() + 6) % 7) + 1;
+}
+
 function timeOf(iso: string) {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;

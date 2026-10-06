@@ -38,9 +38,11 @@ type Props = {
   onOpenClick?: ((startsAt: string) => void) | undefined;
   /** Label a lesson chip (admin shows names, student shows numbers). */
   lessonTitle?: ((cell: Extract<WeekCell, { type: "lesson" }>) => string) | undefined;
+  /** Mark a time as outside the teacher's weekly hours, so it greys out. */
+  isClosed?: ((day: WeekDay, time: string) => boolean) | undefined;
 };
 
-export function TimeGrid({ days, renderLesson, onOpenClick, lessonTitle }: Props) {
+export function TimeGrid({ days, renderLesson, onOpenClick, lessonTitle, isClosed }: Props) {
   return (
     <div className="w-full overflow-x-auto">
       <div className="min-w-[720px]">
@@ -65,6 +67,7 @@ export function TimeGrid({ days, renderLesson, onOpenClick, lessonTitle }: Props
               renderLesson={renderLesson}
               onOpenClick={onOpenClick}
               lessonTitle={lessonTitle}
+              isClosed={isClosed}
             />
           ))}
         </div>
@@ -80,6 +83,7 @@ function Row({
   renderLesson,
   onOpenClick,
   lessonTitle,
+  isClosed,
 }: Props & { time: string; row: number }) {
   return (
     <>
@@ -118,8 +122,13 @@ function Row({
           );
         }
 
+        const closed = isClosed?.(d, time) ?? false;
         return (
-          <div key={cell.startsAt} className="h-14 border-r border-b border-border">
+          <div
+            key={cell.startsAt}
+            className={cn("h-14 border-r border-b border-border", closed && "bg-muted")}
+            title={closed ? "Outside your weekly hours" : undefined}
+          >
             {onOpenClick ? (
               <button
                 type="button"
