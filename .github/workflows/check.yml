@@ -23,18 +23,14 @@ jobs:
   backend:
     name: backend (make test)
     runs-on: ubuntu-latest
-    env:
-      # Matches `requires-python = ">=3.12"` in pyproject.toml. Without this,
-      # uv is free to resolve the environment onto any newer interpreter.
-      UV_PYTHON: "3.12"
     steps:
       - name: Check out the repository
         uses: actions/checkout@v5
 
-      - name: Install Python 3.12
+      - name: Install Python from .python-version
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
