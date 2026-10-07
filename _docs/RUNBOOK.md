@@ -5,8 +5,26 @@ requests to the FastAPI backend, so run both services to use the application.
 
 ## Prerequisites
 
+- Python 3.12, as pinned in the repository-root `.python-version` file
 - Node.js and npm
 - [`uv`](https://docs.astral.sh/uv/) for Python and backend dependency management
+
+The project uses Python 3.12 locally and in CI. This version was chosen to match the
+existing CI interpreter so backend test results are consistent between development and
+pull requests.
+
+From the repository root, sync the backend dependencies:
+
+```sh
+uv sync
+```
+
+`uv` reads `.python-version` when selecting the interpreter for the project environment and
+downloads the pinned interpreter if needed. You can verify the active version with:
+
+```sh
+uv run python --version
+```
 
 ## First-time setup
 
